@@ -9,7 +9,7 @@ class Document(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(500), nullable=False)
-    source = Column(String(200), nullable=False)
+    source = Column(String(100), nullable=False)
     content = Column(Text, nullable=False)
 
 
