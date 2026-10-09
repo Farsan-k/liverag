@@ -1,10 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from app.schemas import DocumentCreate, DocumentUpdate
 from app.config import settings
-from app.crud import create_document
 from app.crud import delete_document
 from app.crud import update_document
 from app.crud import get_document
+from app.crud import create_document_with_chunks
 
 
 app = FastAPI(
@@ -21,20 +21,13 @@ def root():
         }
 
 @app.post("/documents")
-def create_document_api(documents : DocumentCreate):
-
-    document = create_document(
+def create_document_api(documents: DocumentCreate):
+    return create_document_with_chunks(
         documents.title,
         documents.source,
         documents.content
-        )
+    )
 
-    return {
-        "id" : document.id,
-        "title" : documents.title,
-        "source" : documents.source,
-        "content" : documents.content
-    }
 
 @app.get("/documents/{document_id}")
 def get_document_api(document_id:int):
@@ -86,4 +79,6 @@ def document_delete_api(document_id:int):
 
     delete_document(document_id)
 
-    
+
+
+        

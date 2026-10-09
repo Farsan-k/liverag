@@ -1,20 +1,25 @@
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
-
-def create_text_chunks(text):
+def create_text_chunks(text, document_id):
 
     text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size = 100,
-    chunk_overlap = 50,
+        chunk_size=100,
+        chunk_overlap=50,
     )
-    chunk = text_splitter.split_text(text)
 
-    return chunk
+    chunks = text_splitter.split_text(text)
 
+    chunk_list = []
 
-test_text = "Apple reported strong quarterly financial results, with revenue increasing significantly compared with the same period last year."
+    for chunk_index, tex in enumerate(chunks):
+        chunk_dict = {
+            "document_id": document_id,
+            "chunk_index": chunk_index,
+            "text": tex,
+        }
 
-chunks = create_text_chunks(test_text)
+        chunk_list.append(chunk_dict)
 
-print(chunks)
+    return chunk_list
