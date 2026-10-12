@@ -20,3 +20,4 @@ class DocumentChunk(Base):
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
     chunk_index = Column(Integer, nullable=False)
     text = Column(Text, nullable=False)
+    content_hash = Column(String(64), nullable=True)
