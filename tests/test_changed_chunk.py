@@ -12,7 +12,7 @@ def test_changed_chunk_content():
     document = create_document_with_chunks(
         title="Changed Chunk Test",
         source="test",
-        content="Original document content for testing.",
+        content="Original document content for just testing.",
     )
 
     document_id = document["id"]
