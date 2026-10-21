@@ -104,19 +104,21 @@ def update_document(document_id, title, source, content):
 
 
 
+
 def delete_document(document_id):
-
-    with SessionLocal() as session:
-
+    with SessionLocal.begin() as session:
         query = select(Document).where(Document.id == document_id)
-        result = session.execute(query)
-        document = result.scalar_one_or_none()
+        document = session.execute(query).scalar_one_or_none()
 
         if not document:
             return False
 
+        # Delete child chunks before deleting the document.
+        session.query(DocumentChunk).filter(
+            DocumentChunk.document_id == document_id
+        ).delete(synchronize_session=False)
+
         session.delete(document)
-        session.commit()
 
     return True
 
