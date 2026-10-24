@@ -172,29 +172,71 @@ def sync_postgres_chunks_to_qdrant():
 
 
 
-def search_embeddings(query: str, limit: int = 3):
+
+
+def search_embeddings(
+    query: str,
+    limit: int = 3,
+    score_threshold: float | None = None,
+):
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+
     client = QdrantClient(path="./qdrant_data")
 
     try:
         query_vector = generate_embedding(query)
 
+        # Retrieve extra candidates before applying filters.
+        candidate_limit = max(limit * 5, 20)
+
         results = client.query_points(
             collection_name=COLLECTION_NAME,
             query=query_vector,
-            limit=limit,
+            limit=candidate_limit,
             with_payload=True,
         ).points
 
+        # Remove results below the requested similarity threshold.
+        if score_threshold is not None:
+            results = [
+                result
+                for result in results
+                if result.score >= score_threshold
+            ]
+
+        # Keep the strongest matching chunk from each document first.
+        results.sort(key=lambda result: result.score, reverse=True)
+
+        selected_results = []
+        seen_document_ids = set()
+
         for result in results:
+            payload = result.payload or {}
+            document_id = payload.get("document_id")
+
+            if document_id in seen_document_ids:
+                continue
+
+            selected_results.append(result)
+            seen_document_ids.add(document_id)
+
+            if len(selected_results) >= limit:
+                break
+
+        for result in selected_results:
+            payload = result.payload or {}
             print(f"Score: {result.score:.4f}")
-            print(f"Text: {result.payload.get('text', '')}")
-            print(f"Document ID: {result.payload.get('document_id')}")
+            print(f"Text: {payload.get('text', '')}")
+            print(f"Document ID: {payload.get('document_id')}")
             print("-" * 40)
 
-        return results
+        return selected_results
 
     finally:
         client.close()
+
+
 
 
 if __name__ == "__main__":

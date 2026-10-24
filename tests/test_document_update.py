@@ -3,11 +3,16 @@ from app.crud import (
     create_document_with_chunks,
     update_document,
     get_all_document_chunks,
+    delete_document,
 )
 from app.chunking import create_text_chunks
+from app.vector_store import (
+    sync_postgres_chunks_to_qdrant,
+    search_embeddings,
+)
+
 
 def test_document_update():
-    # Create a document with its initial chunks.
     original_content = (
         "Apple reported strong revenue growth during the quarter. "
         "Its earnings increased compared with the previous period."
@@ -21,88 +26,117 @@ def test_document_update():
 
     document_id = document["id"]
 
-    # Capture the original chunks.
-    chunks_before = [
-        chunk for chunk in get_all_document_chunks()
-        if chunk["document_id"] == document_id
-    ]
+    try:
+        # Verify the original chunks.
+        chunks_before = [
+            chunk for chunk in get_all_document_chunks()
+            if chunk["document_id"] == document_id
+        ]
 
-    print(f"Document ID: {document_id}")
-    print(f"Chunks before update: {len(chunks_before)}")
+        assert chunks_before
+        print(f"Chunks before update: {len(chunks_before)}")
 
-    # Update the document content.
-    updated_content = (
-        "Microsoft announced new AI products this quarter. "
-        "Its cloud revenue increased due to enterprise demand."
-    )
+        # Update the document content.
+        updated_content = (
+            "Microsoft announced new AI products this quarter. "
+            "Its cloud revenue increased due to enterprise demand."
+        )
 
-    updated_document = update_document(
-        document_id=document_id,
-        title=None,
-        source=None,
-        content=updated_content,
-    )
+        updated_document = update_document(
+            document_id=document_id,
+            title=None,
+            source=None,
+            content=updated_content,
+        )
 
-    # Read the chunks after updating the document.
-    chunks_after = [
-        chunk for chunk in get_all_document_chunks()
-        if chunk["document_id"] == document_id
-    ]
+        assert updated_document["content"] == updated_content
 
-    print(f"Updated document content: {updated_document['content']}")
-    print(f"Chunks after update: {len(chunks_after)}")
+        # Verify PostgreSQL chunks.
+        chunks_after = [
+            chunk for chunk in get_all_document_chunks()
+            if chunk["document_id"] == document_id
+        ]
 
-    # The document itself should be updated.
-    assert updated_document["content"] == updated_content
+        combined_text = " ".join(
+            chunk["text"] for chunk in chunks_after
+        )
 
-    # This currently checks whether chunk records remain unchanged.
-# Updated chunks should contain the new document content.
-    assert chunks_after, "No chunks found after document update"
+        assert chunks_after
+        assert "Microsoft" in combined_text
+        assert "Apple" not in combined_text
 
-    combined_text = " ".join(
-        chunk["text"] for chunk in chunks_after
-    )
+        # Synchronize the updated chunks to Qdrant.
+        sync_postgres_chunks_to_qdrant()
 
-    assert "Microsoft" in combined_text
-    assert "Apple" not in combined_text
+        qdrant_results = search_embeddings(
+            query="Microsoft AI products and cloud revenue",
+            limit=5,
+            score_threshold=0.0,
+        )
 
-    print("Updated chunks verified!")
-    print("Document update test passed!")
-    
-    # Test shortening the document.
-    short_content = "Microsoft released a new AI product."
+        matching_results = [
+            result for result in qdrant_results
+            if (result.payload or {}).get("document_id") == document_id
+        ]
 
-    update_document(
-        document_id=document_id,
-        title=None,
-        source=None,
-        content=short_content,
-    )
+        assert matching_results, (
+            "Updated document chunks were not found in Qdrant"
+        )
 
-    short_chunks = [
-        chunk for chunk in get_all_document_chunks()
-        if chunk["document_id"] == document_id
-    ]
+        print("Updated PostgreSQL and Qdrant chunks verified!")
 
-    expected_chunks = create_text_chunks(
-        short_content,
-        document_id=document_id,
-    )
+        # Shorten the document and verify obsolete chunks are removed.
+        short_content = "Microsoft released a new AI product."
 
-    print(f"Chunks after shortening: {len(short_chunks)}")
+        update_document(
+            document_id=document_id,
+            title=None,
+            source=None,
+            content=short_content,
+        )
 
-    assert len(short_chunks) == len(expected_chunks)
+        sync_postgres_chunks_to_qdrant()
 
-    combined_short_text = " ".join(
-        chunk["text"] for chunk in short_chunks
-    )
+        short_chunks = [
+            chunk for chunk in get_all_document_chunks()
+            if chunk["document_id"] == document_id
+        ]
 
-    assert "Microsoft released a new AI product." in combined_short_text
+        expected_chunks = create_text_chunks(
+            short_content,
+            document_id=document_id,
+        )
 
-    print("Shortened document chunks verified!")
+        assert len(short_chunks) == len(expected_chunks)
 
+        combined_short_text = " ".join(
+            chunk["text"] for chunk in short_chunks
+        )
 
-    print("Current document update behavior verified!")
+        assert short_content in combined_short_text
+
+        final_results = search_embeddings(
+            query="Microsoft released a new AI product",
+            limit=5,
+            score_threshold=0.0,
+        )
+
+        final_matching_results = [
+            result for result in final_results
+            if (result.payload or {}).get("document_id") == document_id
+        ]
+
+        assert final_matching_results, (
+            "Shortened document was not synchronized to Qdrant"
+        )
+
+        print("Document shortening and Qdrant synchronization verified!")
+        print("Document update test passed!")
+
+    finally:
+        delete_document(document_id)
+        sync_postgres_chunks_to_qdrant()
+        print("Test document and its vectors cleaned up.")
 
 
 if __name__ == "__main__":

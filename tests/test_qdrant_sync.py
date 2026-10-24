@@ -5,8 +5,6 @@ from app.crud import (
     get_all_document_chunks,
     delete_document,
 )
-from app.database import SessionLocal
-from app.models import DocumentChunk
 from app.vector_store import (
     create_collection,
     sync_postgres_chunks_to_qdrant,
@@ -114,7 +112,6 @@ def test_changed_chunk_sync():
                 updated_point.payload["content_hash"]
                 == updated_chunk["content_hash"]
             )
-
         finally:
             client.close()
 
@@ -122,12 +119,35 @@ def test_changed_chunk_sync():
         print("Qdrant content hash updated successfully!")
 
     finally:
-        # Remove only vectors belonging to this test document.
+        # Delete the test document and its PostgreSQL chunks.
+        delete_document(document_id)
+
+        # Remove obsolete vectors from Qdrant.
+        sync_postgres_chunks_to_qdrant()
+
+        print("Test document and its vectors cleaned up.")
+
+
+def test_document_deletion_removes_qdrant_vectors():
+    create_collection()
+
+    document = create_document_with_chunks(
+        title="Qdrant Deletion Test",
+        source="test",
+        content="Temporary financial content for deletion testing.",
+    )
+    document_id = document["id"]
+
+    try:
+        # Synchronize the document's chunks to Qdrant.
+        sync_postgres_chunks_to_qdrant()
+
+        # Confirm that this document has vectors.
         client = QdrantClient(path="./qdrant_data")
         try:
-            client.delete(
+            points, _ = client.scroll(
                 collection_name=COLLECTION_NAME,
-                points_selector=Filter(
+                scroll_filter=Filter(
                     must=[
                         FieldCondition(
                             key="document_id",
@@ -135,19 +155,56 @@ def test_changed_chunk_sync():
                         )
                     ]
                 ),
-                wait=True,
+                limit=100,
+                with_payload=True,
+                with_vectors=False,
             )
+            assert len(points) > 0
         finally:
             client.close()
 
-        # Delete chunks before the document because the foreign
-        # key does not cascade.
-        with SessionLocal.begin() as session:
-            session.query(DocumentChunk).filter(
-                DocumentChunk.document_id == document_id
-            ).delete(synchronize_session=False)
+        # Delete the document and its PostgreSQL chunks.
+        assert delete_document(document_id) is True
 
+        # Synchronize to remove obsolete Qdrant vectors.
+        sync_postgres_chunks_to_qdrant()
+
+        # Verify that no vectors remain for this document.
+        client = QdrantClient(path="./qdrant_data")
+        try:
+            points, _ = client.scroll(
+                collection_name=COLLECTION_NAME,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="document_id",
+                            match=MatchValue(value=document_id),
+                        )
+                    ]
+                ),
+                limit=100,
+                with_payload=True,
+                with_vectors=False,
+            )
+            assert len(points) == 0
+        finally:
+            client.close()
+
+        # Verify PostgreSQL cleanup.
+        remaining_chunks = [
+            chunk
+            for chunk in get_all_document_chunks()
+            if chunk["document_id"] == document_id
+        ]
+        assert remaining_chunks == []
+
+        # The document has already been deleted.
+        assert delete_document(document_id) is False
+
+    finally:
+        # Safe cleanup if an assertion fails before deletion.
         delete_document(document_id)
+        sync_postgres_chunks_to_qdrant()
 
         print("Test document and its vectors cleaned up.")
 
