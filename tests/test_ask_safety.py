@@ -132,3 +132,52 @@ def test_ask_rejects_mismatched_metric():
     )
     assert response.json()["sources"] == []
     mock_generate.assert_not_called()
+
+
+
+def test_ask_returns_answer_when_evidence_matches():
+    revenue_result = type(
+        "FakeResult",
+        (),
+        {
+            "id": 41,
+            "score": 0.57,
+            "payload": {
+                "document_id": 55,
+                "text": (
+                    "Finova synchronization test: monthly revenue "
+                    "was 987654 rupees in March 2026. "
+                    "Updated version: net profit was 123456 rupees "
+                    "in March 2026."
+                ),
+            },
+        },
+    )()
+
+    with (
+        patch(
+            "app.main.search_embeddings",
+            return_value=[revenue_result],
+        ),
+        patch(
+            "app.main.generate_answer",
+            return_value="987654 rupees",
+        ) as mock_generate,
+    ):
+        response = client.post(
+            "/ask",
+            json={
+                "question": (
+                    "What was the company's revenue in March 2026?"
+                ),
+                "limit": 3,
+            },
+        )
+
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["answer"] == "987654 rupees"
+    assert len(body["sources"]) == 1
+    assert body["sources"][0]["document_id"] == 55
+    mock_generate.assert_called_once()
