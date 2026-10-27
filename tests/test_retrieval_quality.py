@@ -93,3 +93,72 @@ def test_search_filters_results_below_threshold(monkeypatch):
     )
 
     assert [result.id for result in results] == [1, 3]
+
+
+
+def test_search_requests_extra_candidates(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def query_points(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(points=[])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.vector_store.QdrantClient",
+        lambda **kwargs: FakeClient(),
+    )
+    monkeypatch.setattr(
+        "app.vector_store.generate_embedding",
+        lambda query: [0.0] * 384,
+    )
+
+    search_embeddings("revenue in March 2026", limit=3)
+
+    assert captured["limit"] == 20
+    assert captured["with_payload"] is True
+
+
+
+def test_search_returns_results_in_descending_score_order(monkeypatch):
+    fake_results = [
+        SimpleNamespace(
+            id=1,
+            score=0.65,
+            payload={"document_id": 10, "text": "Lower score"},
+        ),
+        SimpleNamespace(
+            id=2,
+            score=0.92,
+            payload={"document_id": 20, "text": "Highest score"},
+        ),
+        SimpleNamespace(
+            id=3,
+            score=0.78,
+            payload={"document_id": 30, "text": "Middle score"},
+        ),
+    ]
+
+    class FakeClient:
+        def query_points(self, **kwargs):
+            return SimpleNamespace(points=fake_results)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.vector_store.QdrantClient",
+        lambda **kwargs: FakeClient(),
+    )
+    monkeypatch.setattr(
+        "app.vector_store.generate_embedding",
+        lambda query: [0.0] * 384,
+    )
+
+    results = search_embeddings("revenue in March 2026", limit=3)
+
+    assert [result.id for result in results] == [2, 3, 1]
+    assert [result.score for result in results] == [0.92, 0.78, 0.65]
