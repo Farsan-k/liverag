@@ -35,6 +35,24 @@ def get_document(document_id):
 
 
 
+def get_all_documents():
+    with SessionLocal() as session:
+        documents = session.execute(
+            select(Document).order_by(Document.id)
+        ).scalars().all()
+
+        return [
+            {
+                "id": document.id,
+                "title": document.title,
+                "source": document.source,
+                "content": document.content,
+            }
+            for document in documents
+        ]
+
+
+
 def update_document(document_id, title, source, content):
     with SessionLocal.begin() as session:
         query = select(Document).where(Document.id == document_id)

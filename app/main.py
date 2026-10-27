@@ -5,6 +5,7 @@ from app.crud import delete_document
 from app.crud import update_document
 from app.crud import get_document
 from app.crud import create_document_with_chunks
+from app.crud import get_all_documents
 from app.vector_store import search_embeddings, sync_postgres_chunks_to_qdrant
 from app.llm import generate_answer
 import re
@@ -32,7 +33,6 @@ def has_matching_time_period(question: str, context: str) -> bool:
     question_lower = question.lower()
     context_lower = context.lower()
 
-    # Check explicitly requested years.
     question_years = set(
         re.findall(r"\b(?:19|20)\d{2}\b", question_lower)
     )
@@ -43,7 +43,6 @@ def has_matching_time_period(question: str, context: str) -> bool:
     if question_years and not question_years.issubset(context_years):
         return False
 
-    # Check explicitly requested month names.
     requested_months = {
         month for month in MONTH_NAMES
         if re.search(rf"\b{month}\b", question_lower)
@@ -75,20 +74,16 @@ def has_matching_metric(question: str, context: str) -> bool:
         "debt": ("debt",),
     }
 
-    # Find the metric explicitly mentioned in the question.
     requested_metrics = [
         (metric, keywords)
         for metric, keywords in metric_keywords.items()
         if re.search(rf"\b{re.escape(metric)}\b", question_lower)
     ]
 
-    # If no recognized metric is requested, do not block the question
-    # based on this limited keyword list.
     if not requested_metrics:
         return True
 
     for metric, keywords in requested_metrics:
-        # Require evidence for the requested metric itself.
         if not any(
             re.search(rf"\b{re.escape(keyword)}\b", context_lower)
             for keyword in keywords
@@ -115,6 +110,10 @@ def create_document_api(documents: DocumentCreate):
     sync_postgres_chunks_to_qdrant()
 
     return result
+
+@app.get("/documents")
+def get_all_documents_api():
+    return get_all_documents()
 
 @app.get("/documents/{document_id}")
 def get_document_api(document_id:int):
@@ -252,7 +251,6 @@ def ask_api(request: AskRequest):
 
     context = "\n\n".join(context_parts)
 
-    # Reject empty evidence, mismatched periods, or mismatched metrics.
     if (
         not context.strip()
         or not has_matching_time_period(
