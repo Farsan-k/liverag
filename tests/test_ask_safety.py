@@ -181,3 +181,49 @@ def test_ask_returns_answer_when_evidence_matches():
     assert len(body["sources"]) == 1
     assert body["sources"][0]["document_id"] == 55
     mock_generate.assert_called_once()
+
+
+
+def test_ask_rejects_missing_cash_flow_evidence():
+    revenue_result = type(
+        "FakeResult",
+        (),
+        {
+            "id": 103,
+            "score": 0.75,
+            "payload": {
+                "document_id": 55,
+                "text": (
+                    "The company recorded revenue of "
+                    "987654 rupees in March 2026. "
+                    "Net profit was 123456 rupees in March 2026."
+                ),
+            },
+        },
+    )()
+
+    with (
+        patch(
+            "app.main.search_embeddings",
+            return_value=[revenue_result],
+        ),
+        patch("app.main.generate_answer") as mock_generate,
+    ):
+        response = client.post(
+            "/ask",
+            json={
+                "question": (
+                    "What was the company's cash flow in March 2026?"
+                ),
+                "limit": 3,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["answer"] == (
+        "I do not have enough information to answer this question."
+    )
+    assert body["sources"] == []
+    mock_generate.assert_not_called()

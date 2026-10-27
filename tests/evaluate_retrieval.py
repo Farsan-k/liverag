@@ -23,8 +23,27 @@ EVALUATION_CASES = [
         "question": "What was the company's cash flow in March 2026?",
         "expected_document_ids": [],
     },
+    {
+        "question": "What was the monthly revenue in April 2026?",
+        "expected_document_ids": [],
+    },
+    {
+        "question": "What was Apple's net profit in March 2026?",
+        "expected_document_ids": [],
+    },
+    {
+        "question": "Which products drove Apple's revenue growth?",
+        "expected_document_ids": [84],
+    },
+    {
+        "question": "What earnings outlook did Apple provide for next quarter?",
+        "expected_document_ids": [43],
+    },
+    {
+        "question": "What was Apple's revenue in March 2026?",
+        "expected_document_ids": [],
+    },
 ]
-
 
 def evaluate_retrieval():
     hit_at_1 = 0
