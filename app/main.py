@@ -92,6 +92,114 @@ def has_matching_metric(question: str, context: str) -> bool:
 
     return True
 
+
+
+def answer_numbers_match_context(answer: str, context: str) -> bool:
+    """Reject answers containing numeric values absent from the evidence."""
+
+    number_pattern = r"(?<!\w)[+-]?\d[\d,]*(?:\.\d+)?%?(?!\w)"
+
+    def normalize_number(number: str) -> str:
+        is_percentage = number.endswith("%")
+        number = number.rstrip("%").replace(",", "")
+        value = float(number)
+
+        normalized = format(value, ".12g")
+        return f"{normalized}%" if is_percentage else normalized
+
+    answer_numbers = {
+        normalize_number(number)
+        for number in re.findall(number_pattern, answer)
+    }
+    context_numbers = {
+        normalize_number(number)
+        for number in re.findall(number_pattern, context)
+    }
+
+    return answer_numbers.issubset(context_numbers)
+
+
+
+def answer_metric_numbers_match_context(
+    question: str,
+    answer: str,
+    context: str,
+) -> bool:
+    """Conservatively verify numeric answers for the requested metric."""
+
+    metric_keywords = {
+        "revenue": ("revenue", "sales", "turnover"),
+        "net profit": ("net profit", "net income"),
+        "gross profit": ("gross profit",),
+        "operating profit": ("operating profit",),
+        "cash flow": ("cash flow",),
+        "expenses": ("expenses", "expenditure", "costs"),
+        "assets": ("assets",),
+        "liabilities": ("liabilities",),
+        "debt": ("debt",),
+    }
+
+    question_lower = question.lower()
+
+    requested_metric = next(
+        (
+            metric
+            for metric in sorted(metric_keywords, key=len, reverse=True)
+            if re.search(rf"\b{re.escape(metric)}\b", question_lower)
+        ),
+        None,
+    )
+
+    if requested_metric is None:
+        return True
+
+    aliases = metric_keywords[requested_metric]
+    number_pattern = r"(?<!\w)[+-]?\d[\d,]*(?:\.\d+)?%?(?!\w)"
+
+    def normalize(number: str) -> str:
+        is_percentage = number.endswith("%")
+        value = format(float(number.rstrip("%").replace(",", "")), ".12g")
+        return f"{value}%" if is_percentage else value
+
+    def extract_numbers(text: str) -> set[str]:
+        return {
+            normalize(number)
+            for number in re.findall(number_pattern, text)
+            if not re.fullmatch(r"(?:19|20)\d{2}", number)
+        }
+
+    def metric_numbers(text: str) -> set[str]:
+        numbers = set()
+
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            lower = sentence.lower()
+
+            # Split clauses so different metrics in one sentence
+            # are not automatically treated as equivalent evidence.
+            clauses = re.split(
+                r"\s+(?:and|while|whereas|but)\s+",
+                sentence,
+                flags=re.IGNORECASE,
+            )
+
+            for clause in clauses:
+                clause_lower = clause.lower()
+                if any(
+                    re.search(rf"\b{re.escape(alias)}\b", clause_lower)
+                    for alias in aliases
+                ):
+                    numbers.update(extract_numbers(clause))
+
+        return numbers
+
+    answer_numbers = metric_numbers(answer)
+    evidence_numbers = metric_numbers(context)
+
+    if not answer_numbers:
+        return True
+
+    return answer_numbers.issubset(evidence_numbers)
+
 @app.get("/")
 def root():
     return {
@@ -205,18 +313,19 @@ def search_api(request: SearchRequest):
     }
 
 
+
 @app.post("/ask")
 def ask_api(request: AskRequest):
     if not request.question.strip():
         raise HTTPException(
             status_code=400,
-            detail="Question cannot be empty"
+            detail="Question cannot be empty",
         )
 
     if not 1 <= request.limit <= 5:
         raise HTTPException(
             status_code=400,
-            detail="Limit must be between 1 and 5"
+            detail="Limit must be between 1 and 5",
         )
 
     results = search_embeddings(
@@ -241,7 +350,6 @@ def ask_api(request: AskRequest):
 
         if text:
             context_parts.append(text)
-
             sources.append({
                 "document_id": payload.get("document_id"),
                 "chunk_id": result.id,
@@ -273,9 +381,22 @@ def ask_api(request: AskRequest):
         context=context,
     )
 
+    if (
+        not answer_numbers_match_context(answer, context)
+        or not answer_metric_numbers_match_context(
+            request.question,
+            answer,
+            context,
+        )
+    ):
+        return {
+            "question": request.question,
+            "answer": FALLBACK_ANSWER,
+            "sources": [],
+        }
+
     return {
         "question": request.question,
         "answer": answer,
         "sources": sources,
     }
-

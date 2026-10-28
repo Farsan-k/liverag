@@ -227,3 +227,101 @@ def test_ask_rejects_missing_cash_flow_evidence():
     )
     assert body["sources"] == []
     mock_generate.assert_not_called()
+
+
+
+def test_ask_rejects_answer_that_contradicts_evidence():
+    revenue_result = type(
+        "FakeResult",
+        (),
+        {
+            "id": 104,
+            "score": 0.80,
+            "payload": {
+                "document_id": 55,
+                "text": (
+                    "The company recorded revenue of "
+                    "500000 rupees in April 2026."
+                ),
+            },
+        },
+    )()
+
+    with (
+        patch(
+            "app.main.search_embeddings",
+            return_value=[revenue_result],
+        ),
+        patch(
+            "app.main.generate_answer",
+            return_value=(
+                "The revenue was 900000 rupees in April 2026."
+            ),
+        ),
+    ):
+        response = client.post(
+            "/ask",
+            json={
+                "question": "What was the revenue in April 2026?",
+                "limit": 3,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == (
+        "I do not have enough information to answer this question."
+    )
+    assert response.json()["sources"] == []
+
+def test_ask_accepts_equivalent_number_formatting():
+    from app.main import answer_numbers_match_context
+
+    context = "The company recorded revenue of 500000 rupees."
+    answer = "The revenue was 500,000 rupees."
+
+    assert answer_numbers_match_context(answer, context) is True
+
+
+
+def test_ask_rejects_number_from_wrong_metric():
+    evidence = (
+        "The company recorded revenue of 500000 rupees "
+        "and net profit of 123456 rupees in March 2026."
+    )
+
+    fake_result = type(
+        "FakeResult",
+        (),
+        {
+            "id": 105,
+            "score": 0.85,
+            "payload": {
+                "document_id": 55,
+                "text": evidence,
+            },
+        },
+    )()
+
+    with (
+        patch(
+            "app.main.search_embeddings",
+            return_value=[fake_result],
+        ),
+        patch(
+            "app.main.generate_answer",
+            return_value="The revenue was 123456 rupees in March 2026.",
+        ),
+    ):
+        response = client.post(
+            "/ask",
+            json={
+                "question": "What was the revenue in March 2026?",
+                "limit": 3,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == (
+        "I do not have enough information to answer this question."
+    )
+    assert response.json()["sources"] == []
