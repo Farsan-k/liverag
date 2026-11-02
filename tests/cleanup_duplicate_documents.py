@@ -5,7 +5,6 @@ from app.database import SessionLocal
 from app.models import Document, DocumentChunk
 
 
-# Confirmed duplicate test documents.
 DUPLICATE_DOCUMENT_IDS = [56, 57]
 
 
@@ -26,7 +25,6 @@ def cleanup_duplicate_documents():
                 "Nothing was deleted."
             )
 
-        # Delete child chunks first to satisfy the foreign key.
         chunks_result = session.execute(
             delete(DocumentChunk).where(
                 DocumentChunk.document_id.in_(
@@ -35,7 +33,6 @@ def cleanup_duplicate_documents():
             )
         )
 
-        # Then delete the duplicate parent documents.
         documents_result = session.execute(
             delete(Document).where(
                 Document.id.in_(DUPLICATE_DOCUMENT_IDS)

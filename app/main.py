@@ -92,8 +92,6 @@ def has_matching_metric(question: str, context: str) -> bool:
 
     return True
 
-
-
 def answer_numbers_match_context(answer: str, context: str) -> bool:
     """Reject answers containing numeric values absent from the evidence."""
 
@@ -117,8 +115,6 @@ def answer_numbers_match_context(answer: str, context: str) -> bool:
     }
 
     return answer_numbers.issubset(context_numbers)
-
-
 
 def answer_metric_numbers_match_context(
     question: str,
@@ -174,8 +170,6 @@ def answer_metric_numbers_match_context(
         for sentence in re.split(r"(?<=[.!?])\s+", text):
             lower = sentence.lower()
 
-            # Split clauses so different metrics in one sentence
-            # are not automatically treated as equivalent evidence.
             clauses = re.split(
                 r"\s+(?:and|while|whereas|but)\s+",
                 sentence,
@@ -311,8 +305,6 @@ def search_api(request: SearchRequest):
             for result in results
         ]
     }
-
-
 
 @app.post("/ask")
 def ask_api(request: AskRequest):

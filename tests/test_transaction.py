@@ -27,7 +27,6 @@ def test_document_rolls_back_if_chunk_insertion_fails():
                 content="This document tests transaction rollback.",
             )
 
-    # Verify that the failed transaction left no document behind.
     with SessionLocal() as session:
         document = session.execute(
             select(Document).where(Document.title == test_title)

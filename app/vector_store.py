@@ -82,7 +82,6 @@ def sync_postgres_chunks_to_qdrant():
     client = QdrantClient(path="./qdrant_data")
 
     try:
-        # Get all existing Qdrant point IDs.
         qdrant_point_ids = set()
         offset = None
 
@@ -102,7 +101,6 @@ def sync_postgres_chunks_to_qdrant():
 
             offset = next_offset
 
-        # Identify points that no longer exist in PostgreSQL.
         postgres_chunk_ids = {chunk["id"] for chunk in chunks}
         obsolete_ids = qdrant_point_ids - postgres_chunk_ids
 
@@ -116,7 +114,6 @@ def sync_postgres_chunks_to_qdrant():
         else:
             print("No obsolete Qdrant vectors found")
 
-        # Retrieve existing points for current PostgreSQL chunks.
         existing_points = []
 
         for start in range(0, len(chunks), 100):
@@ -170,10 +167,6 @@ def sync_postgres_chunks_to_qdrant():
     finally:
         client.close()
 
-
-
-
-
 def search_embeddings(
     query: str,
     limit: int = 3,
@@ -187,7 +180,6 @@ def search_embeddings(
     try:
         query_vector = generate_embedding(query)
 
-        # Retrieve extra candidates before applying filters.
         candidate_limit = max(limit * 5, 20)
 
         results = client.query_points(
@@ -197,7 +189,6 @@ def search_embeddings(
             with_payload=True,
         ).points
 
-        # Remove results below the requested similarity threshold.
         if score_threshold is not None:
             results = [
                 result
@@ -205,7 +196,6 @@ def search_embeddings(
                 if result.score >= score_threshold
             ]
 
-        # Keep the strongest matching chunk from each document first.
         results.sort(key=lambda result: result.score, reverse=True)
 
         selected_results = []
@@ -235,9 +225,6 @@ def search_embeddings(
 
     finally:
         client.close()
-
-
-
 
 if __name__ == "__main__":
     create_collection()

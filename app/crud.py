@@ -33,8 +33,6 @@ def get_document(document_id):
 
     return document
 
-
-
 def get_all_documents():
     with SessionLocal() as session:
         documents = session.execute(
@@ -50,8 +48,6 @@ def get_all_documents():
             }
             for document in documents
         ]
-
-
 
 def update_document(document_id, title, source, content):
     with SessionLocal.begin() as session:
@@ -70,13 +66,11 @@ def update_document(document_id, title, source, content):
         if content is not None:
             document.content = content
 
-            # Generate chunks from the updated document content.
             new_chunks = create_text_chunks(
                 document.content,
                 document_id=document.id,
             )
 
-            # Update existing chunks or insert new chunks.
             for chunk in new_chunks:
                 chunk["content_hash"] = calculate_content_hash(
                     chunk["text"]
@@ -99,7 +93,6 @@ def update_document(document_id, title, source, content):
 
                 session.execute(statement)
 
-            # Remove old chunks beyond the new content's length.
             new_chunk_count = len(new_chunks)
 
             session.query(DocumentChunk).filter(
@@ -110,7 +103,6 @@ def update_document(document_id, title, source, content):
         session.flush()
         session.refresh(document)
 
-        # Copy the values before the session closes.
         updated_document = {
             "id": document.id,
             "title": document.title,
@@ -120,9 +112,6 @@ def update_document(document_id, title, source, content):
 
     return updated_document
 
-
-
-
 def delete_document(document_id):
     with SessionLocal.begin() as session:
         query = select(Document).where(Document.id == document_id)
@@ -131,7 +120,6 @@ def delete_document(document_id):
         if not document:
             return False
 
-        # Delete child chunks before deleting the document.
         session.query(DocumentChunk).filter(
             DocumentChunk.document_id == document_id
         ).delete(synchronize_session=False)
@@ -140,14 +128,10 @@ def delete_document(document_id):
 
     return True
 
-
-
-
 def save_document_chunks(chunks):
     if not chunks:
         return 0
 
-    # Calculate a SHA-256 hash for each chunk.
     for chunk in chunks:
         chunk["content_hash"] = calculate_content_hash(chunk["text"])
 
@@ -174,10 +158,6 @@ def save_document_chunks(chunks):
 
     return len(updated_or_inserted_ids)
 
-
-
-
-
 def insert_chunks_in_session(session, chunks):
     if not chunks:
         return 0
@@ -194,10 +174,6 @@ def insert_chunks_in_session(session, chunks):
     inserted_ids = session.execute(statement).scalars().all()
 
     return len(inserted_ids)
-
-
-
-
 
 def create_document_with_chunks(title, source, content):
     with SessionLocal.begin() as session:
@@ -228,8 +204,6 @@ def create_document_with_chunks(title, source, content):
 
     return result
 
-
-
 def get_all_document_chunks():
     with SessionLocal() as session:
         chunks = session.execute(
@@ -246,8 +220,6 @@ def get_all_document_chunks():
             }
             for chunk in chunks
         ]
-
-
 
 def backfill_chunk_hashes():
     updated_count = 0

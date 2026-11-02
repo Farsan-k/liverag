@@ -6,9 +6,6 @@ class DocumentCreate(BaseModel):
     source : str
     content : str
 
-
-
-
 class DocumentUpdate(BaseModel):
     title: Optional[str] = None
     source: Optional[str] = None
@@ -17,8 +14,6 @@ class DocumentUpdate(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     limit: int = 3
-
-
 
 class AskRequest(BaseModel):
     question: str

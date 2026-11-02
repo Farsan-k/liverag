@@ -8,7 +8,6 @@ FALLBACK_ANSWER = (
     "I do not have enough information to answer this question."
 )
 
-
 def generate_answer(question: str, context: str) -> str:
     if not context.strip():
         return FALLBACK_ANSWER

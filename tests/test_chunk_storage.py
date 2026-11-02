@@ -27,7 +27,6 @@ def test_save_document_chunks():
             document_id=document_id,
         )
 
-        # The document creation function already stored these chunks.
         saved_chunks = [
             chunk for chunk in get_all_document_chunks()
             if chunk["document_id"] == document_id
@@ -35,7 +34,6 @@ def test_save_document_chunks():
 
         assert len(saved_chunks) == len(chunks)
 
-        # Saving identical chunks should not insert duplicates.
         first_saved_count = save_document_chunks(chunks)
         second_saved_count = save_document_chunks(chunks)
 

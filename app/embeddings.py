@@ -11,8 +11,6 @@ def generate_embedding(text: str) -> list[float]:
     embedding = model.encode(text)
     return embedding.tolist()
 
-
-
 def cosine_similarity(vector_a, vector_b) -> float:
     a = np.array(vector_a)
     b = np.array(vector_b)

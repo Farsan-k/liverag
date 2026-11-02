@@ -27,7 +27,6 @@ def test_document_update():
     document_id = document["id"]
 
     try:
-        # Verify the original chunks.
         chunks_before = [
             chunk for chunk in get_all_document_chunks()
             if chunk["document_id"] == document_id
@@ -36,7 +35,6 @@ def test_document_update():
         assert chunks_before
         print(f"Chunks before update: {len(chunks_before)}")
 
-        # Update the document content.
         updated_content = (
             "Microsoft announced new AI products this quarter. "
             "Its cloud revenue increased due to enterprise demand."
@@ -51,7 +49,6 @@ def test_document_update():
 
         assert updated_document["content"] == updated_content
 
-        # Verify PostgreSQL chunks.
         chunks_after = [
             chunk for chunk in get_all_document_chunks()
             if chunk["document_id"] == document_id
@@ -65,7 +62,6 @@ def test_document_update():
         assert "Microsoft" in combined_text
         assert "Apple" not in combined_text
 
-        # Synchronize the updated chunks to Qdrant.
         sync_postgres_chunks_to_qdrant()
 
         qdrant_results = search_embeddings(
@@ -85,7 +81,6 @@ def test_document_update():
 
         print("Updated PostgreSQL and Qdrant chunks verified!")
 
-        # Shorten the document and verify obsolete chunks are removed.
         short_content = "Microsoft released a new AI product."
 
         update_document(
