@@ -10,6 +10,7 @@ from app.vector_store import search_embeddings, sync_postgres_chunks_to_qdrant
 from app.llm import generate_answer
 import re
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 
 app = FastAPI(
@@ -92,84 +93,130 @@ def has_matching_metric(question: str, context: str) -> bool:
 
     return True
 
+
+FINANCIAL_SCALES = {
+    "thousand": Decimal("1000"),
+    "thousands": Decimal("1000"),
+    "lakh": Decimal("100000"),
+    "lakhs": Decimal("100000"),
+    "lac": Decimal("100000"),
+    "lacs": Decimal("100000"),
+    "crore": Decimal("10000000"),
+    "crores": Decimal("10000000"),
+    "million": Decimal("1000000"),
+    "millions": Decimal("1000000"),
+    "billion": Decimal("1000000000"),
+    "billions": Decimal("1000000000"),
+}
+
+
+def normalize_financial_number(
+    number: str,
+    scale: str | None = None,
+    is_percentage: bool = False,
+) -> str:
+    """Normalize financial amounts to a comparable numeric value."""
+
+    value = Decimal(number.replace(",", ""))
+
+    if scale:
+        value *= FINANCIAL_SCALES[scale.lower()]
+
+    normalized = format(value.normalize(), "f")
+
+    return f"{normalized}%" if is_percentage else normalized
+
+
+def extract_normalized_numbers(
+    text: str,
+    exclude_years: bool = False,
+) -> set[str]:
+    """Extract normalized numbers, including financial unit conversions."""
+
+    pattern = re.compile(
+        r"(?<![\w.])"
+        r"(?P<number>[+-]?\d[\d,]*(?:\.\d+)?)"
+        r"(?:\s*(?P<scale>thousands?|lakhs?|lacs?|crores?|millions?|billions?))?"
+        r"(?:\s*(?P<percentage>%|percent(?:age)?))?"
+        r"(?!\w)",
+        re.IGNORECASE,
+    )
+
+    numbers = set()
+
+    for match in pattern.finditer(text):
+        number = match.group("number")
+        scale = match.group("scale")
+        percentage = match.group("percentage")
+
+        if exclude_years and not scale and re.fullmatch(
+            r"(?:19|20)\d{2}", number
+        ):
+            continue
+
+        try:
+            numbers.add(
+                normalize_financial_number(
+                    number,
+                    scale,
+                    bool(percentage),
+                )
+            )
+        except (InvalidOperation, ValueError):
+            continue
+
+    return numbers
+
+
 def answer_numbers_match_context(answer: str, context: str) -> bool:
-    """Reject answers containing numeric values absent from the evidence."""
+    """Reject numeric values that are not supported by the evidence."""
 
-    number_pattern = r"(?<!\w)[+-]?\d[\d,]*(?:\.\d+)?%?(?!\w)"
-
-    def normalize_number(number: str) -> str:
-        is_percentage = number.endswith("%")
-        number = number.rstrip("%").replace(",", "")
-        value = float(number)
-
-        normalized = format(value, ".12g")
-        return f"{normalized}%" if is_percentage else normalized
-
-    answer_numbers = {
-        normalize_number(number)
-        for number in re.findall(number_pattern, answer)
-    }
-    context_numbers = {
-        normalize_number(number)
-        for number in re.findall(number_pattern, context)
-    }
+    answer_numbers = extract_normalized_numbers(answer)
+    context_numbers = extract_normalized_numbers(context)
 
     return answer_numbers.issubset(context_numbers)
+
 
 def answer_metric_numbers_match_context(
     question: str,
     answer: str,
     context: str,
 ) -> bool:
-    """Conservatively verify numeric answers for the requested metric."""
+    """Verify numeric answers for every requested financial metric."""
 
     metric_keywords = {
-        "revenue": ("revenue", "sales", "turnover"),
-        "net profit": ("net profit", "net income"),
-        "gross profit": ("gross profit",),
-        "operating profit": ("operating profit",),
-        "cash flow": ("cash flow",),
-        "expenses": ("expenses", "expenditure", "costs"),
-        "assets": ("assets",),
-        "liabilities": ("liabilities",),
-        "debt": ("debt",),
+        "revenue": ("sales", "turnover"),
+        "net profit": ("net income",),
+        "gross profit": (),
+        "operating profit": (),
+        "cash flow": (),
+        "expenses": ("expenditure", "costs"),
+        "assets": (),
+        "liabilities": (),
+        "debt": (),
     }
 
     question_lower = question.lower()
 
-    requested_metric = next(
-        (
-            metric
-            for metric in sorted(metric_keywords, key=len, reverse=True)
-            if re.search(rf"\b{re.escape(metric)}\b", question_lower)
-        ),
-        None,
-    )
+    requested_metrics = [
+        metric
+        for metric, aliases in metric_keywords.items()
+        if any(
+            re.search(rf"\b{re.escape(alias)}\b", question_lower)
+            for alias in (metric, *aliases)
+        )
+    ]
 
-    if requested_metric is None:
+    if not requested_metrics:
         return True
 
-    aliases = metric_keywords[requested_metric]
-    number_pattern = r"(?<!\w)[+-]?\d[\d,]*(?:\.\d+)?%?(?!\w)"
-
-    def normalize(number: str) -> str:
-        is_percentage = number.endswith("%")
-        value = format(float(number.rstrip("%").replace(",", "")), ".12g")
-        return f"{value}%" if is_percentage else value
-
-    def extract_numbers(text: str) -> set[str]:
-        return {
-            normalize(number)
-            for number in re.findall(number_pattern, text)
-            if not re.fullmatch(r"(?:19|20)\d{2}", number)
-        }
-
-    def metric_numbers(text: str) -> set[str]:
+    def metric_numbers(
+        text: str,
+        aliases: tuple[str, ...],
+    ) -> set[str]:
         numbers = set()
 
         for sentence in re.split(r"(?<=[.!?])\s+", text):
-            lower = sentence.lower()
-
             clauses = re.split(
                 r"\s+(?:and|while|whereas|but)\s+",
                 sentence,
@@ -178,21 +225,97 @@ def answer_metric_numbers_match_context(
 
             for clause in clauses:
                 clause_lower = clause.lower()
+
                 if any(
-                    re.search(rf"\b{re.escape(alias)}\b", clause_lower)
+                    re.search(
+                        rf"\b{re.escape(alias)}\b",
+                        clause_lower,
+                    )
                     for alias in aliases
                 ):
-                    numbers.update(extract_numbers(clause))
+                    numbers.update(
+                        extract_normalized_numbers(
+                            clause,
+                            exclude_years=True,
+                        )
+                    )
 
         return numbers
 
-    answer_numbers = metric_numbers(answer)
-    evidence_numbers = metric_numbers(context)
+    for metric in requested_metrics:
+        aliases = (metric, *metric_keywords[metric])
 
-    if not answer_numbers:
-        return True
+        answer_numbers = metric_numbers(answer, aliases)
+        evidence_numbers = metric_numbers(context, aliases)
 
-    return answer_numbers.issubset(evidence_numbers)
+        if not answer_numbers:
+            continue
+
+        if not answer_numbers.issubset(evidence_numbers):
+            return False
+
+    return True
+
+
+def answer_currency_matches_context(
+    answer: str,
+    context: str,
+) -> bool:
+    """Ensure currency and normalized amounts match the evidence."""
+
+    number_pattern = r"[+-]?\d[\d,]*(?:\.\d+)?"
+
+    currency_pattern = re.compile(
+        rf"(?:(?P<prefix>₹|(?<!\w)INR\b|(?<!\w)USD\b|"
+        rf"(?<!\w)US\s+dollars?\b|(?<!\w)Rs\.?|(?<!\w)\$)\s*)?"
+        rf"(?P<number>{number_pattern})"
+        rf"(?:\s*(?P<scale>thousands?|lakhs?|lacs?|crores?|millions?|billions?))?"
+        rf"(?:\s*(?P<suffix>rupees?\b|INR\b|USD\b|"
+        rf"US\s+dollars?\b|dollars?\b))?",
+        re.IGNORECASE,
+    )
+
+    def extract_currency_claims(
+        text: str,
+    ) -> set[tuple[str, str]]:
+        claims = set()
+
+        for match in currency_pattern.finditer(text):
+            prefix = match.group("prefix")
+            suffix = match.group("suffix")
+
+            if not prefix and not suffix:
+                continue
+
+            marker = (prefix or suffix).lower()
+
+            if marker in {"₹", "inr", "rs", "rs.", "rupee", "rupees"}:
+                currency = "INR"
+            elif marker in {
+                "$", "usd", "us dollar", "us dollars",
+                "dollar", "dollars",
+            }:
+                currency = "USD"
+            else:
+                continue
+
+            try:
+                amount = normalize_financial_number(
+                    match.group("number"),
+                    match.group("scale"),
+                )
+            except (InvalidOperation, ValueError):
+                continue
+
+            claims.add((amount, currency))
+
+        return claims
+
+    answer_claims = extract_currency_claims(answer)
+    context_claims = extract_currency_claims(context)
+
+    return answer_claims.issubset(context_claims)
+
 
 @app.get("/")
 def root():
@@ -320,6 +443,7 @@ def ask_api(request: AskRequest):
             detail="Limit must be between 1 and 5",
         )
 
+    # Step 1: Retrieve relevant chunks
     results = search_embeddings(
         query=request.question,
         limit=request.limit,
@@ -333,6 +457,7 @@ def ask_api(request: AskRequest):
             "sources": [],
         }
 
+    # Step 2: Build context and source information
     context_parts = []
     sources = []
 
@@ -342,6 +467,7 @@ def ask_api(request: AskRequest):
 
         if text:
             context_parts.append(text)
+
             sources.append({
                 "document_id": payload.get("document_id"),
                 "chunk_id": result.id,
@@ -351,6 +477,7 @@ def ask_api(request: AskRequest):
 
     context = "\n\n".join(context_parts)
 
+    # Step 3: Validate retrieved evidence
     if (
         not context.strip()
         or not has_matching_time_period(
@@ -368,15 +495,21 @@ def ask_api(request: AskRequest):
             "sources": [],
         }
 
+    # Step 4: Generate answer using LLM
     answer = generate_answer(
         question=request.question,
         context=context,
     )
 
+    # Step 5: Validate generated answer
     if (
         not answer_numbers_match_context(answer, context)
         or not answer_metric_numbers_match_context(
             request.question,
+            answer,
+            context,
+        )
+        or not answer_currency_matches_context(
             answer,
             context,
         )
@@ -387,6 +520,7 @@ def ask_api(request: AskRequest):
             "sources": [],
         }
 
+    # Step 6: Return validated answer
     return {
         "question": request.question,
         "answer": answer,
