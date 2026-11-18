@@ -32,23 +32,104 @@ def create_collection():
         client.close()
 
 
+
+
+def search_embeddings(
+    query: str,
+    limit: int = 3,
+    score_threshold: float | None = None,
+    deduplicate_documents: bool = True,
+):
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+
+    client = QdrantClient(path="./qdrant_data")
+
+    try:
+        query_vector = generate_embedding(query)
+
+        candidate_limit = max(limit * 5, 20)
+
+        results = client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            limit=candidate_limit,
+            with_payload=True,
+        ).points
+
+        if score_threshold is not None:
+            results = [
+                result
+                for result in results
+                if result.score >= score_threshold
+            ]
+
+        results.sort(
+            key=lambda result: result.score,
+            reverse=True,
+        )
+
+        if deduplicate_documents:
+            selected_results = []
+            seen_document_ids = set()
+
+            for result in results:
+                payload = result.payload or {}
+                document_id = payload.get("document_id")
+
+                if document_id in seen_document_ids:
+                    continue
+
+                selected_results.append(result)
+                seen_document_ids.add(document_id)
+
+                if len(selected_results) >= limit:
+                    break
+        else:
+            selected_results = results[:limit]
+
+        print(f"\nQuery: {query}")
+        print(f"Retrieved chunks: {len(selected_results)}")
+
+        for result in selected_results:
+            payload = result.payload or {}
+
+            print("-" * 70)
+            print(f"Score: {result.score:.4f}")
+            print(f"Chunk ID: {payload.get('chunk_id')}")
+            print(f"Document ID: {payload.get('document_id')}")
+            print(f"Chunk Index: {payload.get('chunk_index')}")
+            print(f"Text: {payload.get('text')}")
+
+        return selected_results
+
+    finally:
+        client.close()
+
+
 def store_embedding(
     text: str,
     chunk_id: int,
     document_id: int,
     chunk_index: int,
     content_hash: str | None = None,
-    client: QdrantClient | None = None,
+    client=None,
 ):
+    # Create a client only when one is not supplied
     owns_client = client is None
 
     if owns_client:
         client = QdrantClient(path="./qdrant_data")
 
     try:
+        # Generate embedding
         vector = generate_embedding(text)
-        current_hash = content_hash or calculate_content_hash(text)
 
+        # Calculate content hash if not provided
+        if content_hash is None:
+            content_hash = calculate_content_hash(text)
+
+        # Prepare Qdrant point
         point = PointStruct(
             id=chunk_id,
             vector=vector,
@@ -57,20 +138,26 @@ def store_embedding(
                 "document_id": document_id,
                 "chunk_index": chunk_index,
                 "text": text,
-                "content_hash": current_hash,
+                "content_hash": content_hash,
             },
         )
 
+        # Insert or update the vector
         client.upsert(
             collection_name=COLLECTION_NAME,
             points=[point],
+            wait=True,
         )
 
-        print(f"Stored embedding for chunk ID: {chunk_id}")
+        print(f"Stored embedding for chunk: {chunk_id}")
+
+        return point
 
     finally:
         if owns_client:
             client.close()
+
+
 
 
 
@@ -163,65 +250,6 @@ def sync_postgres_chunks_to_qdrant():
         print(f"Embeddings created or updated: {new_count}")
         print(f"Unchanged chunks skipped: {skipped_count}")
         print("PostgreSQL to Qdrant synchronization completed")
-
-    finally:
-        client.close()
-
-def search_embeddings(
-    query: str,
-    limit: int = 3,
-    score_threshold: float | None = None,
-):
-    if limit < 1:
-        raise ValueError("limit must be at least 1")
-
-    client = QdrantClient(path="./qdrant_data")
-
-    try:
-        query_vector = generate_embedding(query)
-
-        candidate_limit = max(limit * 5, 20)
-
-        results = client.query_points(
-            collection_name=COLLECTION_NAME,
-            query=query_vector,
-            limit=candidate_limit,
-            with_payload=True,
-        ).points
-
-        if score_threshold is not None:
-            results = [
-                result
-                for result in results
-                if result.score >= score_threshold
-            ]
-
-        results.sort(key=lambda result: result.score, reverse=True)
-
-        selected_results = []
-        seen_document_ids = set()
-
-        for result in results:
-            payload = result.payload or {}
-            document_id = payload.get("document_id")
-
-            if document_id in seen_document_ids:
-                continue
-
-            selected_results.append(result)
-            seen_document_ids.add(document_id)
-
-            if len(selected_results) >= limit:
-                break
-
-        for result in selected_results:
-            payload = result.payload or {}
-            print(f"Score: {result.score:.4f}")
-            print(f"Text: {payload.get('text', '')}")
-            print(f"Document ID: {payload.get('document_id')}")
-            print("-" * 40)
-
-        return selected_results
 
     finally:
         client.close()
