@@ -491,3 +491,68 @@ def test_currency_validator_accepts_lakh_conversion():
         "Revenue was ₹500000.",
         "Revenue was ₹5 lakh."
     ) is True
+
+
+
+
+
+
+def test_metric_validator_rejects_missing_requested_amount():
+    from app.main import answer_metric_numbers_match_context
+
+    question = "What was the net profit in March 2026?"
+
+    context = (
+        "Net profit was 123456 rupees in March 2026."
+    )
+
+    answer = "The company reported a positive net profit."
+
+    assert answer_metric_numbers_match_context(
+        question, answer, context
+    ) is False
+
+
+def test_ask_rejects_answer_without_requested_financial_amount():
+    evidence = (
+        "Net profit was 123456 rupees in March 2026."
+    )
+
+    fake_result = type(
+        "FakeResult",
+        (),
+        {
+            "id": 106,
+            "score": 0.85,
+            "payload": {
+                "document_id": 55,
+                "text": evidence,
+            },
+        },
+    )()
+
+    with (
+        patch(
+            "app.main.search_embeddings",
+            return_value=[fake_result],
+        ),
+        patch(
+            "app.main.generate_answer",
+            return_value=(
+                "The company reported a positive net profit."
+            ),
+        ),
+    ):
+        response = client.post(
+            "/ask",
+            json={
+                "question": "What was the net profit in March 2026?",
+                "limit": 3,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == (
+        "I do not have enough information to answer this question."
+    )
+    assert response.json()["sources"] == []

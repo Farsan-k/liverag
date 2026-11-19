@@ -205,6 +205,8 @@ def extract_normalized_numbers(
     return numbers
 
 
+
+
 def answer_numbers_match_context(answer: str, context: str) -> bool:
     """Reject numeric values that are not supported by the evidence."""
 
@@ -212,6 +214,10 @@ def answer_numbers_match_context(answer: str, context: str) -> bool:
     context_numbers = extract_normalized_numbers(context)
 
     return answer_numbers.issubset(context_numbers)
+
+
+
+
 
 
 def answer_metric_numbers_match_context(
@@ -283,15 +289,30 @@ def answer_metric_numbers_match_context(
         aliases = (metric, *metric_keywords[metric])
 
         answer_numbers = metric_numbers(answer, aliases)
+
+        # Allow a number-only answer when exactly one metric was requested.
+        if not answer_numbers and len(requested_metrics) == 1:
+            answer_numbers = extract_normalized_numbers(
+                answer,
+                exclude_years=True,
+            )
+
         evidence_numbers = metric_numbers(context, aliases)
 
+        # Reject answers that omit the requested metric's amount.
         if not answer_numbers:
-            continue
+            return False
 
+        # Reject when the evidence has no supporting amount.
+        if not evidence_numbers:
+            return False
+
+        # Reject numbers that do not match the evidence.
         if not answer_numbers.issubset(evidence_numbers):
             return False
 
     return True
+
 
 
 def answer_currency_matches_context(
