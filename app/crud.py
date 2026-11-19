@@ -1,6 +1,6 @@
 from app.models import Document, DocumentChunk
 from app.database import SessionLocal
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert
 from app.chunking import create_text_chunks
 from app.hashing import calculate_content_hash
@@ -237,3 +237,91 @@ def backfill_chunk_hashes():
                 updated_count += 1
 
     return updated_count
+
+
+
+
+
+def search_keyword_chunks(query: str, limit: int = 5):
+    """
+    Search document chunks using PostgreSQL full-text search.
+    Results are ordered by PostgreSQL relevance rank.
+    """
+
+    if not query or not query.strip():
+        return []
+
+    if limit < 1:
+        raise ValueError("Limit must be greater than zero")
+
+    search_query = func.plainto_tsquery("english", query.strip())
+
+    search_vector = func.to_tsvector(
+        "english",
+        DocumentChunk.text
+    )
+
+    rank = func.ts_rank_cd(
+        search_vector,
+        search_query
+    ).label("rank")
+
+    statement = (
+        select(
+            DocumentChunk.id.label("chunk_id"),
+            DocumentChunk.document_id,
+            DocumentChunk.chunk_index,
+            DocumentChunk.text,
+            Document.title.label("document_title"),
+            Document.source.label("document_source"),
+            rank,
+        )
+        .join(
+            Document,
+            Document.id == DocumentChunk.document_id
+        )
+        .where(search_vector.op("@@")(search_query))
+        .order_by(rank.desc(), DocumentChunk.id.asc(),)
+        .limit(limit)
+    )
+
+    with SessionLocal() as session:
+        results = session.execute(statement).mappings().all()
+
+        return [dict(result) for result in results]
+
+
+
+
+def get_chunk_metadata(chunk_ids: list[int]):
+    """
+    Retrieve document metadata for a collection of chunk IDs.
+    Returns a dictionary keyed by chunk_id.
+    """
+
+    if not chunk_ids:
+        return {}
+
+    statement = (
+        select(
+            DocumentChunk.id.label("chunk_id"),
+            DocumentChunk.document_id,
+            DocumentChunk.chunk_index,
+            DocumentChunk.text,
+            Document.title.label("document_title"),
+            Document.source.label("document_source"),
+        )
+        .join(
+            Document,
+            Document.id == DocumentChunk.document_id
+        )
+        .where(DocumentChunk.id.in_(chunk_ids))
+    )
+
+    with SessionLocal() as session:
+        results = session.execute(statement).mappings().all()
+
+        return {
+            result["chunk_id"]: dict(result)
+            for result in results
+        }
