@@ -15,6 +15,7 @@ from app.validation import (
     FALLBACK_ANSWER,
     has_matching_time_period,
     has_matching_metric,
+    has_matching_metric_period,
     normalize_financial_number,
     extract_normalized_numbers,
     answer_numbers_match_context,
@@ -443,6 +444,7 @@ def search_api(request: SearchRequest):
         ]
     }
 
+
 @app.post("/ask")
 def ask_api(request: AskRequest):
     if not request.question.strip():
@@ -499,6 +501,10 @@ def ask_api(request: AskRequest):
             context,
         )
         or not has_matching_metric(
+            request.question,
+            context,
+        )
+        or not has_matching_metric_period(
             request.question,
             context,
         )

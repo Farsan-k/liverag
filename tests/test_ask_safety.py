@@ -556,3 +556,53 @@ def test_ask_rejects_answer_without_requested_financial_amount():
         "I do not have enough information to answer this question."
     )
     assert response.json()["sources"] == []
+
+
+
+
+
+
+
+def test_ask_rejects_metric_from_wrong_reporting_period():
+    evidence = (
+        "Revenue was 500000 rupees in March 2026. "
+        "Net profit was 123456 rupees in April 2026."
+    )
+
+    fake_result = type(
+        "FakeResult",
+        (),
+        {
+            "id": 107,
+            "score": 0.85,
+            "payload": {
+                "document_id": 55,
+                "text": evidence,
+            },
+        },
+    )()
+
+    with (
+        patch(
+            "app.main.search_embeddings",
+            return_value=[fake_result],
+        ),
+        patch(
+            "app.main.generate_answer",
+            return_value="The net profit was 123456 rupees in March 2026.",
+        ) as mock_generate,
+    ):
+        response = client.post(
+            "/ask",
+            json={
+                "question": "What was the net profit in March 2026?",
+                "limit": 3,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == (
+        "I do not have enough information to answer this question."
+    )
+    assert response.json()["sources"] == []
+    mock_generate.assert_not_called()

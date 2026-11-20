@@ -131,6 +131,150 @@ def has_matching_metric(question: str, context: str) -> bool:
     return True
 
 
+
+
+
+
+
+
+def has_matching_metric_period(
+    question: str,
+    context: str,
+) -> bool:
+    """Verify requested metrics have numeric evidence for the requested period."""
+
+    question_lower = question.lower()
+
+    requested_months = {
+        month
+        for month in MONTH_NAMES
+        if re.search(rf"\b{month}\b", question_lower)
+    }
+
+    requested_years = set(
+        re.findall(
+            r"(?<!\d)(?:FY\s*)?((?:19|20|21)\d{2})\b",
+            question_lower,
+        )
+    )
+
+    if not requested_months and not requested_years:
+        return True
+
+    metric_keywords = {
+        "revenue": (
+            "revenue",
+            "net sales",
+            "total sales",
+            "sales",
+            "turnover",
+        ),
+        "net profit": ("net profit", "net income"),
+        "gross profit": ("gross profit",),
+        "operating profit": ("operating profit",),
+        "profit": ("profit", "earnings"),
+        "expenses": ("expenses", "expenditure", "costs"),
+        "cash flow": ("cash flow",),
+        "assets": ("assets",),
+        "liabilities": ("liabilities",),
+        "debt": ("debt",),
+    }
+
+    # Detect metrics using both canonical names and their aliases.
+    requested_metrics = [
+        (metric, keywords)
+        for metric, keywords in metric_keywords.items()
+        if any(
+            re.search(rf"\b{re.escape(keyword)}\b", question_lower)
+            for keyword in keywords
+        )
+    ]
+
+    if not requested_metrics:
+        return True
+
+    specific_profit_metrics = {
+        "net profit",
+        "gross profit",
+        "operating profit",
+    }
+
+    if any(
+        metric in specific_profit_metrics
+        for metric, _ in requested_metrics
+    ):
+        requested_metrics = [
+            item
+            for item in requested_metrics
+            if item[0] != "profit"
+        ]
+
+    clauses = re.split(
+        r"(?<=[.!?])\s+|[,;]|\s+(?:and|while|whereas|but)\s+",
+        context.lower(),
+        flags=re.IGNORECASE,
+    )
+
+    for metric, keywords in requested_metrics:
+        supported = False
+
+        for index, clause in enumerate(clauses):
+            if not any(
+                re.search(rf"\b{re.escape(keyword)}\b", clause)
+                for keyword in keywords
+            ):
+                continue
+
+            effective_text = clause
+
+            # A reporting-period heading applies only to the next clause.
+            if index > 0 and re.search(
+                r"(?:reporting\s+period|period|for\s+the\s+period)\s*:",
+                clauses[index - 1],
+            ):
+                heading_match = re.search(
+                    r"(?:reporting\s+period|period|for\s+the\s+period)"
+                    r"\s*:\s*(.*)",
+                    clauses[index - 1],
+                )
+
+                if heading_match:
+                    effective_text = (
+                        f"{heading_match.group(1)} {clause}"
+                    )
+
+            has_amount = bool(
+                extract_normalized_numbers(
+                    clause,
+                    exclude_years=True,
+                )
+            )
+
+            has_month = all(
+                re.search(rf"\b{month}\b", effective_text)
+                for month in requested_months
+            )
+
+            has_year = all(
+                re.search(rf"\b{year}\b", effective_text)
+                for year in requested_years
+            )
+
+            if has_amount and has_month and has_year:
+                supported = True
+                break
+
+        if not supported:
+            return False
+
+    return True
+
+
+
+
+
+
+
 FINANCIAL_SCALES = {
     "thousand": Decimal("1000"),
     "thousands": Decimal("1000"),
