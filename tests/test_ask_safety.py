@@ -44,7 +44,6 @@ def test_ask_does_not_call_llm_when_no_results():
     mock_generate.assert_not_called()
 
 
-
 def test_ask_does_not_invent_answer_for_mismatched_evidence():
     march_revenue = (
         "The company recorded revenue of 500000 rupees "
@@ -91,7 +90,6 @@ def test_ask_does_not_invent_answer_for_mismatched_evidence():
     mock_generate.assert_not_called()
 
 
-
 def test_ask_rejects_mismatched_metric():
     revenue_result = type(
         "FakeResult",
@@ -132,7 +130,6 @@ def test_ask_rejects_mismatched_metric():
     )
     assert response.json()["sources"] == []
     mock_generate.assert_not_called()
-
 
 
 def test_ask_returns_answer_when_evidence_matches():
@@ -183,7 +180,6 @@ def test_ask_returns_answer_when_evidence_matches():
     mock_generate.assert_called_once()
 
 
-
 def test_ask_rejects_missing_cash_flow_evidence():
     revenue_result = type(
         "FakeResult",
@@ -227,7 +223,6 @@ def test_ask_rejects_missing_cash_flow_evidence():
     )
     assert body["sources"] == []
     mock_generate.assert_not_called()
-
 
 
 def test_ask_rejects_answer_that_contradicts_evidence():
@@ -280,7 +275,6 @@ def test_ask_accepts_equivalent_number_formatting():
     answer = "The revenue was 500,000 rupees."
 
     assert answer_numbers_match_context(answer, context) is True
-
 
 
 def test_ask_rejects_number_from_wrong_metric():
@@ -493,10 +487,6 @@ def test_currency_validator_accepts_lakh_conversion():
     ) is True
 
 
-
-
-
-
 def test_metric_validator_rejects_missing_requested_amount():
     from app.main import answer_metric_numbers_match_context
 
@@ -558,11 +548,6 @@ def test_ask_rejects_answer_without_requested_financial_amount():
     assert response.json()["sources"] == []
 
 
-
-
-
-
-
 def test_ask_rejects_metric_from_wrong_reporting_period():
     evidence = (
         "Revenue was 500000 rupees in March 2026. "
@@ -606,3 +591,164 @@ def test_ask_rejects_metric_from_wrong_reporting_period():
     )
     assert response.json()["sources"] == []
     mock_generate.assert_not_called()
+
+
+def test_ask_rejects_missing_iphone_revenue_amount():
+    evidence = (
+        "Apple reported total revenue of "
+        "100 billion dollars in 2025. "
+        "iPhone revenue growth increased by 12%."
+    )
+
+    fake_result = type(
+        "FakeResult",
+        (),
+        {
+            "id": 108,
+            "score": 0.85,
+            "payload": {
+                "document_id": 55,
+                "text": evidence,
+            },
+        },
+    )()
+
+    with (
+        patch(
+            "app.main.search_embeddings",
+            return_value=[fake_result],
+        ),
+        patch(
+            "app.main.generate_answer",
+        ) as mock_generate,
+    ):
+        response = client.post(
+            "/ask",
+            json={
+                "question": (
+                    "What was Apple's iPhone revenue amount?"
+                ),
+                "limit": 3,
+            },
+        )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["answer"] == (
+        "I do not have enough information to answer this question."
+    )
+
+    assert body["sources"] == []
+
+    mock_generate.assert_not_called()
+
+
+def test_ask_accepts_matching_iphone_revenue_amount():
+    evidence = (
+        "Apple reported iPhone revenue of "
+        "51.3 billion dollars in 2025."
+    )
+
+    fake_result = type(
+        "FakeResult",
+        (),
+        {
+            "id": 109,
+            "score": 0.85,
+            "payload": {
+                "document_id": 55,
+                "text": evidence,
+            },
+        },
+    )()
+
+    with (
+        patch(
+            "app.main.search_embeddings",
+            return_value=[fake_result],
+        ),
+        patch(
+            "app.main.generate_answer",
+            return_value=(
+                "Apple reported iPhone revenue of "
+                "51.3 billion dollars in 2025."
+            ),
+        ) as mock_generate,
+    ):
+        response = client.post(
+            "/ask",
+            json={
+                "question": (
+                    "What was Apple's iPhone revenue amount?"
+                ),
+                "limit": 3,
+            },
+        )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["answer"] == (
+        "Apple reported iPhone revenue of "
+        "51.3 billion dollars in 2025."
+    )
+
+    assert len(body["sources"]) == 1
+    assert body["sources"][0]["document_id"] == 55
+
+    mock_generate.assert_called_once()
+
+
+def test_ask_allows_descriptive_iphone_revenue_question():
+    evidence = (
+        "Apple's iPhone revenue growth increased by 12% in 2025, "
+        "driven by strong customer demand and higher sales."
+    )
+
+    fake_result = type(
+        "FakeResult",
+        (),
+        {
+            "id": 110,
+            "score": 0.85,
+            "payload": {
+                "document_id": 55,
+                "text": evidence,
+            },
+        },
+    )()
+
+    with (
+        patch(
+            "app.main.search_embeddings",
+            return_value=[fake_result],
+        ),
+        patch(
+            "app.main.generate_answer",
+            return_value=(
+                "iPhone revenue growth was driven by "
+                "strong customer demand and higher sales."
+            ),
+        ) as mock_generate,
+    ):
+        response = client.post(
+            "/ask",
+            json={
+                "question": (
+                    "What drove Apple's iPhone revenue growth?"
+                ),
+                "limit": 3,
+            },
+        )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert "strong customer demand" in body["answer"]
+    assert len(body["sources"]) == 1
+
+    mock_generate.assert_called_once()

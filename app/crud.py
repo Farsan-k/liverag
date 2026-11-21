@@ -4,6 +4,7 @@ from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert
 from app.chunking import create_text_chunks
 from app.hashing import calculate_content_hash
+import re
 
 def create_document(title, source, content):
 
@@ -239,13 +240,14 @@ def backfill_chunk_hashes():
     return updated_count
 
 
-
-
-
 def search_keyword_chunks(query: str, limit: int = 5):
     """
     Search document chunks using PostgreSQL full-text search.
-    Results are ordered by PostgreSQL relevance rank.
+
+    Strategy:
+    1. Try strict AND-based search.
+    2. If no results are found, use OR-based fallback.
+    3. Rank results using PostgreSQL relevance ranking.
     """
 
     if not query or not query.strip():
@@ -254,43 +256,107 @@ def search_keyword_chunks(query: str, limit: int = 5):
     if limit < 1:
         raise ValueError("Limit must be greater than zero")
 
-    search_query = func.plainto_tsquery("english", query.strip())
-
     search_vector = func.to_tsvector(
         "english",
         DocumentChunk.text
     )
 
-    rank = func.ts_rank_cd(
-        search_vector,
-        search_query
-    ).label("rank")
-
-    statement = (
-        select(
-            DocumentChunk.id.label("chunk_id"),
-            DocumentChunk.document_id,
-            DocumentChunk.chunk_index,
-            DocumentChunk.text,
-            Document.title.label("document_title"),
-            Document.source.label("document_source"),
-            rank,
-        )
-        .join(
-            Document,
-            Document.id == DocumentChunk.document_id
-        )
-        .where(search_vector.op("@@")(search_query))
-        .order_by(rank.desc(), DocumentChunk.id.asc(),)
-        .limit(limit)
-    )
-
     with SessionLocal() as session:
-        results = session.execute(statement).mappings().all()
 
-        return [dict(result) for result in results]
+        # Stage 1: Strict AND-based search
+        strict_query = func.plainto_tsquery(
+            "english",
+            query.strip()
+        )
 
+        strict_rank = func.ts_rank_cd(
+            search_vector,
+            strict_query
+        ).label("rank")
 
+        base_statement = (
+            select(
+                DocumentChunk.id.label("chunk_id"),
+                DocumentChunk.document_id,
+                DocumentChunk.chunk_index,
+                DocumentChunk.text,
+                Document.title.label("document_title"),
+                Document.source.label("document_source"),
+            )
+            .join(
+                Document,
+                Document.id == DocumentChunk.document_id
+            )
+        )
+
+        strict_statement = (
+            base_statement
+            .add_columns(strict_rank)
+            .where(search_vector.op("@@")(strict_query))
+            .order_by(
+                strict_rank.desc(),
+                DocumentChunk.id.asc()
+            )
+            .limit(limit)
+        )
+
+        strict_results = (
+            session.execute(strict_statement)
+            .mappings()
+            .all()
+        )
+
+        if strict_results:
+            return [dict(result) for result in strict_results]
+
+        # Stage 2: OR-based fallback
+        stop_words = {
+            "what", "which", "who", "how", "is", "was",
+            "were", "the", "a", "an", "and", "or", "to",
+            "for", "of", "in", "on", "did", "does", "do",
+            "drove", "contributed"
+        }
+
+        terms = re.findall(r"[a-zA-Z0-9]+", query.lower())
+
+        terms = list(dict.fromkeys(
+            term for term in terms
+            if term not in stop_words
+        ))
+
+        if not terms:
+            return []
+
+        or_query_text = " | ".join(terms)
+
+        fallback_query = func.to_tsquery(
+            "english",
+            or_query_text
+        )
+
+        fallback_rank = func.ts_rank_cd(
+            search_vector,
+            fallback_query
+        ).label("rank")
+
+        fallback_statement = (
+            base_statement
+            .add_columns(fallback_rank)
+            .where(search_vector.op("@@")(fallback_query))
+            .order_by(
+                fallback_rank.desc(),
+                DocumentChunk.id.asc()
+            )
+            .limit(limit)
+        )
+
+        fallback_results = (
+            session.execute(fallback_statement)
+            .mappings()
+            .all()
+        )
+
+        return [dict(result) for result in fallback_results]
 
 
 def get_chunk_metadata(chunk_ids: list[int]):

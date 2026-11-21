@@ -1,8 +1,6 @@
 import re
 from decimal import Decimal, InvalidOperation
 
-
-
 FALLBACK_ANSWER = (
     "I do not have enough information to answer this question."
 )
@@ -12,7 +10,6 @@ MONTH_NAMES = (
     "may", "june", "july", "august",
     "september", "october", "november", "december",
 )
-
 
 def has_matching_time_period(question: str, context: str) -> bool:
     """Check whether requested years and months exist in the evidence."""
@@ -42,10 +39,6 @@ def has_matching_time_period(question: str, context: str) -> bool:
         return False
 
     return True
-
-
-
-
 
 def has_matching_metric(question: str, context: str) -> bool:
     """
@@ -129,13 +122,6 @@ def has_matching_metric(question: str, context: str) -> bool:
             return False
 
     return True
-
-
-
-
-
-
-
 
 def has_matching_metric_period(
     question: str,
@@ -269,12 +255,6 @@ def has_matching_metric_period(
 
     return True
 
-
-
-
-
-
-
 FINANCIAL_SCALES = {
     "thousand": Decimal("1000"),
     "thousands": Decimal("1000"),
@@ -289,7 +269,6 @@ FINANCIAL_SCALES = {
     "billion": Decimal("1000000000"),
     "billions": Decimal("1000000000"),
 }
-
 
 def normalize_financial_number(
     number: str,
@@ -306,7 +285,6 @@ def normalize_financial_number(
     normalized = format(value.normalize(), "f")
 
     return f"{normalized}%" if is_percentage else normalized
-
 
 def extract_normalized_numbers(
     text: str,
@@ -348,9 +326,6 @@ def extract_normalized_numbers(
 
     return numbers
 
-
-
-
 def answer_numbers_match_context(answer: str, context: str) -> bool:
     """Reject numeric values that are not supported by the evidence."""
 
@@ -359,10 +334,24 @@ def answer_numbers_match_context(answer: str, context: str) -> bool:
 
     return answer_numbers.issubset(context_numbers)
 
+def is_descriptive_financial_question(question: str) -> bool:
+    """Identify questions asking for explanations rather than amounts."""
 
+    question_lower = question.lower()
 
+    descriptive_patterns = (
+        r"\bwhat (?:drove|caused|explains?)\b",
+        r"\bwhy did .*\b(?:grow|increase|decline|decrease|change)\b",
+        r"\b(?:drivers|factors|reasons) behind\b",
+        r"\bwhat (?:were|are) the (?:main )?"
+        r"(?:drivers|factors|reasons)\b",
+        r"\bhow did .*\b(?:grow|increase|decline|decrease|perform|change)\b",
+    )
 
-
+    return any(
+        re.search(pattern, question_lower)
+        for pattern in descriptive_patterns
+    )
 
 def answer_metric_numbers_match_context(
     question: str,
@@ -443,6 +432,13 @@ def answer_metric_numbers_match_context(
 
         evidence_numbers = metric_numbers(context, aliases)
 
+        # Descriptive questions do not require a metric amount in the answer.
+        if (
+            not answer_numbers
+            and is_descriptive_financial_question(question)
+        ):
+            continue
+
         # Reject answers that omit the requested metric's amount.
         if not answer_numbers:
             return False
@@ -456,8 +452,6 @@ def answer_metric_numbers_match_context(
             return False
 
     return True
-
-
 
 def answer_currency_matches_context(
     answer: str,
@@ -517,3 +511,198 @@ def answer_currency_matches_context(
     context_claims = extract_currency_claims(context)
 
     return answer_claims.issubset(context_claims)
+
+def requires_metric_amount(question: str) -> bool:
+    """
+    Determine whether the question explicitly requests
+    a numerical amount for a financial metric.
+    """
+    question_lower = question.lower()
+
+    amount_patterns = (
+        r"\bhow much\b",
+        r"\bwhat (?:was|is|were|are) the "
+        r"(?:total )?(?:amount|value)\b",
+        r"\b(?:revenue|sales|profit|income|cash flow|"
+        r"expenses|assets|liabilities|debt)\s+amount\b",
+        r"\b(?:amount|value|figure)\s+of\b",
+    )
+
+    return any(
+        re.search(pattern, question_lower)
+        for pattern in amount_patterns
+    )
+
+def has_monetary_amount(text: str) -> bool:
+    """Check whether text contains an explicitly identified monetary amount."""
+
+    monetary_pattern = re.compile(
+        r"(?:(?:₹|\$|INR\b|USD\b|Rs\.?)\s*"
+        r"\d[\d,]*(?:\.\d+)?"
+        r"(?:\s*(?:thousands?|lakhs?|lacs?|crores?|millions?|billions?))?"
+        r"|"
+        r"\d[\d,]*(?:\.\d+)?\s*"
+        r"(?:thousands?|lakhs?|lacs?|crores?|millions?|billions?)"
+        r"\s*(?:INR|USD|rupees?|dollars?)\b)",
+        re.IGNORECASE,
+    )
+
+    return bool(monetary_pattern.search(text))
+
+def has_matching_metric_category_amount(
+    question: str,
+    context: str,
+) -> bool:
+    """Check that requested categories have matching monetary evidence."""
+
+    category_keywords = {
+        "product": ("iphone", "mac", "ipad"),
+        "service": ("services",),
+        "geography": (
+            "americas", "europe", "greater china",
+            "china", "japan", "asia pacific",
+        ),
+        "business segment": ("products", "services"),
+    }
+
+    metric_keywords = {
+        "revenue": ("revenue", "net sales", "total sales", "sales", "turnover"),
+        "profit": ("profit",),
+        "net profit": ("net profit", "net income"),
+        "gross profit": ("gross profit",),
+        "operating profit": ("operating profit",),
+        "cash flow": ("cash flow",),
+        "expenses": ("expenses", "expenditure", "costs"),
+        "assets": ("assets",),
+        "liabilities": ("liabilities",),
+        "debt": ("debt",),
+    }
+
+    question_lower = question.lower()
+    context_lower = context.lower()
+
+    def find_matches(text, keywords):
+        return {
+            keyword
+            for keyword in keywords
+            if re.search(rf"\b{re.escape(keyword)}\b", text)
+        }
+
+    all_categories = {
+        keyword
+        for keywords in category_keywords.values()
+        for keyword in keywords
+    }
+
+    requested_categories = find_matches(
+        question_lower,
+        all_categories,
+    )
+
+    if not requested_categories:
+        return True
+
+    requested_metrics = {
+        metric
+        for metric, aliases in metric_keywords.items()
+        if find_matches(question_lower, (metric, *aliases))
+    }
+
+    if not requested_metrics:
+        return False
+
+    specific_profit_metrics = {
+        "net profit",
+        "gross profit",
+        "operating profit",
+    }
+
+    if requested_metrics & specific_profit_metrics:
+        requested_metrics.discard("profit")
+
+    # Split the question into related parts.
+    question_parts = re.split(
+        r"\s+(?:and|while|whereas|but)\s+|[,;]",
+        question_lower,
+    )
+
+    # Associate categories and metrics within each part.
+    associations = []
+    previous_categories = set()
+    previous_metrics = set()
+
+    for part in question_parts:
+        categories = find_matches(part, all_categories)
+
+        metrics = {
+            metric
+            for metric, aliases in metric_keywords.items()
+            if find_matches(part, (metric, *aliases))
+            and metric in requested_metrics
+        }
+
+        if categories and metrics:
+            associations.append((categories, metrics))
+            previous_categories = categories
+            previous_metrics = metrics
+
+        elif categories:
+            if previous_metrics:
+                associations.append((categories, previous_metrics))
+            previous_categories = categories
+
+        elif metrics:
+            if previous_categories:
+                associations.append((previous_categories, metrics))
+            previous_metrics = metrics
+
+    if not associations:
+        return False
+
+    # Ensure every requested category and metric is represented.
+    associated_categories = set()
+    associated_metrics = set()
+
+    for categories, metrics in associations:
+        associated_categories.update(categories)
+        associated_metrics.update(metrics)
+
+    if not requested_categories.issubset(associated_categories):
+        return False
+
+    if not requested_metrics.issubset(associated_metrics):
+        return False
+
+    # Split retrieved evidence into individual clauses.
+    context_clauses = re.split(
+        r"(?<=[.!?])\s+|[,;]|\s+(?:and|while|whereas|but)\s+",
+        context_lower,
+        flags=re.IGNORECASE,
+    )
+
+    # Validate each category-metric association independently.
+    for categories, metrics in associations:
+        for category in categories:
+            for metric in metrics:
+                aliases = metric_keywords[metric]
+
+                supported = any(
+                    re.search(
+                        rf"\b{re.escape(category)}\b",
+                        clause,
+                    )
+                    and any(
+                        re.search(
+                            rf"\b{re.escape(alias)}\b",
+                            clause,
+                        )
+                        for alias in (metric, *aliases)
+                    )
+                    and has_monetary_amount(clause)
+                    for clause in context_clauses
+                )
+
+                if not supported:
+                    return False
+
+    return True

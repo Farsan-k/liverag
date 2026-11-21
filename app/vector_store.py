@@ -1,6 +1,12 @@
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import (
+    Distance,
+    VectorParams,
+    Filter,
+    FieldCondition,
+    MatchValue,
+)
 from app.embeddings import generate_embedding
 from qdrant_client.models import PointStruct
 from app.crud import get_all_document_chunks, search_keyword_chunks, get_chunk_metadata
@@ -32,22 +38,37 @@ def create_collection():
         client.close()
 
 
-
-
 def search_embeddings(
     query: str,
     limit: int = 3,
     score_threshold: float | None = None,
     deduplicate_documents: bool = True,
 ):
+    """Search Qdrant using semantic similarity."""
+
+    # 1. Validate inputs
+    if not query or not query.strip():
+        return []
+
     if limit < 1:
         raise ValueError("limit must be at least 1")
 
+    if (
+        score_threshold is not None
+        and not -1 <= score_threshold <= 1
+    ):
+        raise ValueError(
+            "score_threshold must be between -1 and 1"
+        )
+
+    # 2. Initialize Qdrant client
     client = QdrantClient(path="./qdrant_data")
 
     try:
+        # 3. Generate query embedding
         query_vector = generate_embedding(query)
 
+        # 4. Retrieve additional candidates
         candidate_limit = max(limit * 5, 20)
 
         results = client.query_points(
@@ -57,6 +78,7 @@ def search_embeddings(
             with_payload=True,
         ).points
 
+        # 5. Apply similarity threshold
         if score_threshold is not None:
             results = [
                 result
@@ -64,11 +86,13 @@ def search_embeddings(
                 if result.score >= score_threshold
             ]
 
+        # 6. Sort by descending similarity score
         results.sort(
             key=lambda result: result.score,
             reverse=True,
         )
 
+        # 7. Deduplicate only when document IDs exist
         if deduplicate_documents:
             selected_results = []
             seen_document_ids = set()
@@ -77,17 +101,23 @@ def search_embeddings(
                 payload = result.payload or {}
                 document_id = payload.get("document_id")
 
-                if document_id in seen_document_ids:
-                    continue
+                # Missing document IDs cannot be safely
+                # deduplicated, so retain those results.
+                if document_id is not None:
+                    if document_id in seen_document_ids:
+                        continue
+
+                    seen_document_ids.add(document_id)
 
                 selected_results.append(result)
-                seen_document_ids.add(document_id)
 
                 if len(selected_results) >= limit:
                     break
+
         else:
             selected_results = results[:limit]
 
+        # 8. Display retrieval information
         print(f"\nQuery: {query}")
         print(f"Retrieved chunks: {len(selected_results)}")
 
@@ -157,6 +187,33 @@ def store_embedding(
         if owns_client:
             client.close()
 
+
+
+
+
+def delete_document_embeddings(document_id: int):
+    client = QdrantClient(path="./qdrant_data")
+
+    try:
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(value=document_id),
+                    )
+                ]
+            ),
+            wait=True,
+        )
+
+        print(
+            f"Deleted Qdrant embeddings for document: {document_id}"
+        )
+
+    finally:
+        client.close()
 
 
 
@@ -279,10 +336,6 @@ if __name__ == "__main__":
     search_embeddings(
         query="How did Apple's revenue and earnings perform?"
     )
-
-
-
-
 
 
 def hybrid_search(

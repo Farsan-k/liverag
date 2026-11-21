@@ -6,7 +6,11 @@ from app.crud import update_document
 from app.crud import get_document
 from app.crud import create_document_with_chunks
 from app.crud import get_all_documents
-from app.vector_store import search_embeddings, sync_postgres_chunks_to_qdrant
+from app.vector_store import (
+    search_embeddings,
+    sync_postgres_chunks_to_qdrant,
+    delete_document_embeddings,
+)
 from app.llm import generate_answer
 import re
 from datetime import date
@@ -21,13 +25,14 @@ from app.validation import (
     answer_numbers_match_context,
     answer_metric_numbers_match_context,
     answer_currency_matches_context,
+    requires_metric_amount,
+    has_matching_metric_category_amount,
 )
 
 app = FastAPI(
     title=settings.app_name,
     debug=settings.debug,
               )
-
 
 # FALLBACK_ANSWER = (
 #     "I do not have enough information to answer this question."
@@ -38,7 +43,6 @@ app = FastAPI(
 #     "may", "june", "july", "august",
 #     "september", "october", "november", "december",
 # )
-
 
 # def has_matching_time_period(question: str, context: str) -> bool:
 #     question_lower = question.lower()
@@ -103,7 +107,6 @@ app = FastAPI(
 
 #     return True
 
-
 # FINANCIAL_SCALES = {
 #     "thousand": Decimal("1000"),
 #     "thousands": Decimal("1000"),
@@ -118,7 +121,6 @@ app = FastAPI(
 #     "billion": Decimal("1000000000"),
 #     "billions": Decimal("1000000000"),
 # }
-
 
 # def normalize_financial_number(
 #     number: str,
@@ -135,7 +137,6 @@ app = FastAPI(
 #     normalized = format(value.normalize(), "f")
 
 #     return f"{normalized}%" if is_percentage else normalized
-
 
 # def extract_normalized_numbers(
 #     text: str,
@@ -177,7 +178,6 @@ app = FastAPI(
 
 #     return numbers
 
-
 # def answer_numbers_match_context(answer: str, context: str) -> bool:
 #     """Reject numeric values that are not supported by the evidence."""
 
@@ -185,8 +185,6 @@ app = FastAPI(
 #     context_numbers = extract_normalized_numbers(context)
 
 #     return answer_numbers.issubset(context_numbers)
-
-
 
 # def answer_metric_numbers_match_context(
 #     question: str,
@@ -270,8 +268,6 @@ app = FastAPI(
 
 #     return True
 
-
-
 # def answer_currency_matches_context(
 #     answer: str,
 #     context: str,
@@ -331,12 +327,11 @@ app = FastAPI(
 
 #     return answer_claims.issubset(context_claims)
 
-
 @app.get("/")
 def root():
     return {
         "message": "LiveRAG API is running",
-        "environment": settings.environment, 
+        "environment": settings.environment,
         }
 
 @app.post("/documents")
@@ -409,7 +404,9 @@ def document_delete_api(document_id: int):
         )
 
     delete_document(document_id)
-    sync_postgres_chunks_to_qdrant()
+    delete_document_embeddings(document_id)
+
+
 
 @app.post("/search")
 def search_api(request: SearchRequest):
@@ -443,7 +440,6 @@ def search_api(request: SearchRequest):
             for result in results
         ]
     }
-
 
 @app.post("/ask")
 def ask_api(request: AskRequest):
@@ -507,6 +503,13 @@ def ask_api(request: AskRequest):
         or not has_matching_metric_period(
             request.question,
             context,
+        )
+        or (
+            requires_metric_amount(request.question)
+            and not has_matching_metric_category_amount(
+                request.question,
+                context,
+            )
         )
     ):
         return {
