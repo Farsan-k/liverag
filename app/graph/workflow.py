@@ -2,11 +2,24 @@
 from langgraph.graph import StateGraph, START, END
 
 from app.graph.state import ResearchState
+
 from app.graph.nodes import (
+    research_node,
     retrieve_node,
     validate_evidence_node,
     generate_answer_node,
 )
+
+
+def route_after_research(state: ResearchState) -> str:
+    """
+    Decide whether research planning succeeded.
+    """
+
+    if state.get("error"):
+        return "end"
+
+    return "retrieve"
 
 
 def route_after_validation(state: ResearchState) -> str:
@@ -28,15 +41,27 @@ def build_research_graph():
     graph = StateGraph(ResearchState)
 
     # Register nodes
+    graph.add_node("research", research_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("validate_evidence", validate_evidence_node)
     graph.add_node("generate_answer", generate_answer_node)
 
-    # Define workflow
-    graph.add_edge(START, "retrieve")
+    # Start with the Research Agent
+    graph.add_edge(START, "research")
+
+    # Conditional routing after research
+    graph.add_conditional_edges(
+        "research",
+        route_after_research,
+        {
+            "retrieve": "retrieve",
+            "end": END,
+        },
+    )
+
+    # Retrieval and validation
     graph.add_edge("retrieve", "validate_evidence")
 
-    # Conditional routing
     graph.add_conditional_edges(
         "validate_evidence",
         route_after_validation,

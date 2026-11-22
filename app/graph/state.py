@@ -1,5 +1,23 @@
 
-from typing import TypedDict, Any
+from typing import TypedDict, Any, NotRequired
+
+
+class ResearchPlan(TypedDict, total=False):
+    company: str
+    metrics: list[str]
+    periods: list[str]
+    analysis_type: str
+    requires_calculation: bool
+    search_requirements: list[str]
+
+
+class FinancialAnalysis(TypedDict, total=False):
+    summary: str
+    calculations: list[dict[str, Any]]
+    comparisons: list[dict[str, Any]]
+    trends: list[dict[str, Any]]
+    insights: list[str]
+    limitations: list[str]
 
 
 class ResearchState(TypedDict):
@@ -7,16 +25,27 @@ class ResearchState(TypedDict):
     question: str
     limit: int
 
-    # Retrieved information
-    retrieved_chunks: list[dict[str, Any]]
-    context: str
-    sources: list[dict[str, Any]]
+    # Research Agent
+    research_plan: NotRequired[ResearchPlan]
 
-    # Evidence validation
-    is_sufficient: bool
+    # Retrieval Agent
+    retrieved_chunks: NotRequired[list[dict[str, Any]]]
+    context: NotRequired[str]
+    sources: NotRequired[list[dict[str, Any]]]
+    is_sufficient: NotRequired[bool]
 
-    # Generated response
-    answer: str
+    # Analysis Agent
+    analysis: NotRequired[FinancialAnalysis]
+
+    # Verification Agent
+    verification_result: NotRequired[bool]
+    verification_errors: NotRequired[list[str]]
+
+    # Workflow control
+    retry_count: NotRequired[int]
+
+    # Response Agent
+    answer: NotRequired[str]
 
     # Error handling
-    error: str
+    error: NotRequired[str]

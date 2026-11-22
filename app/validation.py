@@ -123,6 +123,7 @@ def has_matching_metric(question: str, context: str) -> bool:
 
     return True
 
+
 def has_matching_metric_period(
     question: str,
     context: str,
@@ -241,8 +242,12 @@ def has_matching_metric_period(
                 for month in requested_months
             )
 
+            # Supports both FY2025 and 2025.
             has_year = all(
-                re.search(rf"\b{year}\b", effective_text)
+                re.search(
+                    rf"(?<!\d)(?:fy\s*)?{year}\b",
+                    effective_text,
+                )
                 for year in requested_years
             )
 
@@ -254,6 +259,7 @@ def has_matching_metric_period(
             return False
 
     return True
+
 
 FINANCIAL_SCALES = {
     "thousand": Decimal("1000"),
