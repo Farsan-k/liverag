@@ -13,7 +13,8 @@ def create_document(title, source, content):
         document = Document(
             title=title,
             source=source,
-            content=content
+            content=content,
+            content_hash=calculate_content_hash(content),
         )
 
         session.add(document)
@@ -66,6 +67,7 @@ def update_document(document_id, title, source, content):
 
         if content is not None:
             document.content = content
+            document.content_hash = calculate_content_hash(content)
 
             new_chunks = create_text_chunks(
                 document.content,
@@ -176,34 +178,71 @@ def insert_chunks_in_session(session, chunks):
 
     return len(inserted_ids)
 
+
 def create_document_with_chunks(title, source, content):
+    content_hash = calculate_content_hash(content)
+
     with SessionLocal.begin() as session:
-        document = Document(
-            title=title,
-            source=source,
-            content=content
+        # Insert only if this content hash does not already exist.
+        statement = (
+            insert(Document)
+            .values(
+                title=title,
+                source=source,
+                content=content,
+                content_hash=content_hash,
+            )
+            .on_conflict_do_nothing(
+                constraint="uq_documents_content_hash"
+            )
+            .returning(Document.id)
         )
 
-        session.add(document)
-        session.flush()
+        document_id = session.execute(statement).scalar_one_or_none()
 
-        chunks = create_text_chunks(
-            document.content,
-            document_id=document.id
-        )
+        # Duplicate document: return the existing record.
+        if document_id is None:
+            document = session.execute(
+                select(Document).where(
+                    Document.content_hash == content_hash
+                )
+            ).scalar_one()
 
-        saved_count = insert_chunks_in_session(session, chunks)
+            result = {
+                "id": document.id,
+                "title": document.title,
+                "source": document.source,
+                "content": document.content,
+                "content_hash": document.content_hash,
+                "chunks_created": 0,
+                "chunks_saved": 0,
+                "duplicate": True,
+            }
 
-        result = {
-            "id": document.id,
-            "title": document.title,
-            "source": document.source,
-            "content": document.content,
-            "chunks_created": len(chunks),
-            "chunks_saved": saved_count
-        }
+        else:
+            # New document: create its chunks in the same transaction.
+            document = session.get(Document, document_id)
+
+            chunks = create_text_chunks(
+                document.content,
+                document_id=document.id,
+            )
+
+            saved_count = insert_chunks_in_session(session, chunks)
+
+            result = {
+                "id": document.id,
+                "title": document.title,
+                "source": document.source,
+                "content": document.content,
+                "content_hash": document.content_hash,
+                "chunks_created": len(chunks),
+                "chunks_saved": saved_count,
+                "duplicate": False,
+            }
 
     return result
+
 
 def get_all_document_chunks():
     with SessionLocal() as session:

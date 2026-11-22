@@ -342,7 +342,9 @@ def create_document_api(documents: DocumentCreate):
         documents.content
     )
 
-    sync_postgres_chunks_to_qdrant()
+    # Sync Qdrant only when a new document is created.
+    if not result["duplicate"]:
+        sync_postgres_chunks_to_qdrant()
 
     return result
 
