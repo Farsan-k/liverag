@@ -210,6 +210,7 @@ def _verify_net_profit_margin(
     return errors
 
 
+
 def _verify_revenue_growth(
     calculation: dict[str, Any],
 ) -> list[str]:
@@ -277,16 +278,90 @@ def _verify_revenue_growth(
                 "Revenue growth requires comparable reporting periods."
             )
 
-        if current_start != previous_end + timedelta(days=1):
-            errors.append(
-                "Revenue growth requires consecutive reporting periods."
-            )
+        # Determine whether fiscal period metadata is available.
+        fiscal_fields = (
+            "fiscal_year",
+            "fiscal_period",
+            "period_scope",
+        )
 
+        has_fiscal_metadata = any(
+            current_period.get(field) is not None
+            or previous_period.get(field) is not None
+            for field in fiscal_fields
+        )
+
+        if has_fiscal_metadata:
+            current_fy = current_period.get("fiscal_year")
+            previous_fy = previous_period.get("fiscal_year")
+
+            current_fiscal_period = current_period.get("fiscal_period")
+            previous_fiscal_period = previous_period.get("fiscal_period")
+
+            current_scope = current_period.get("period_scope")
+            previous_scope = previous_period.get("period_scope")
+
+            # Validate fiscal years.
+            if (
+                not isinstance(current_fy, int)
+                or isinstance(current_fy, bool)
+                or not isinstance(previous_fy, int)
+                or isinstance(previous_fy, bool)
+            ):
+                errors.append(
+                    "Fiscal year metadata is missing or invalid."
+                )
+
+            elif current_fy != previous_fy + 1:
+                errors.append(
+                    "Revenue growth requires consecutive fiscal years."
+                )
+
+            # Both inputs must represent the same fiscal quarter or FY.
+            if current_fiscal_period != previous_fiscal_period:
+                errors.append(
+                    "Revenue growth requires matching fiscal periods."
+                )
+
+            if current_fiscal_period in {"Q1", "Q2", "Q3", "Q4"}:
+                if current_scope not in {"standalone", "ytd"}:
+                    errors.append(
+                        "Quarterly revenue growth requires a valid period scope."
+                    )
+
+                if current_scope != previous_scope:
+                    errors.append(
+                        "Revenue growth requires matching quarterly period scopes."
+                    )
+
+            elif current_fiscal_period == "FY":
+                if (
+                    current_scope != "annual"
+                    or previous_scope != "annual"
+                ):
+                    errors.append(
+                        "Annual revenue growth requires annual period scopes."
+                    )
+
+            else:
+                errors.append(
+                    "Unsupported fiscal period for revenue growth."
+                )
+
+        else:
+            # Backward compatibility for records without fiscal metadata.
+            if current_start != previous_end + timedelta(days=1):
+                errors.append(
+                    "Revenue growth requires consecutive reporting periods."
+                )
+
+        # Current reporting period must be later.
         if current_end <= previous_end:
             errors.append(
                 "Current revenue must belong to a later reporting period."
             )
 
+        # Validate financial values.
         current_value = _decimal(
             current.get("value"),
             "Current revenue",
@@ -304,6 +379,7 @@ def _verify_revenue_growth(
                 "Previous revenue must be positive to calculate growth."
             )
 
+        # Independently recalculate revenue growth.
         if previous_value > 0 and current_value >= 0:
             expected = (
                 (current_value - previous_value) / previous_value
@@ -324,6 +400,7 @@ def _verify_revenue_growth(
         errors.append(str(exc))
 
     return errors
+
 
 
 def verify_analysis(
