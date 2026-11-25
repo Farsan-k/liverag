@@ -1,11 +1,12 @@
 
+import re
 from typing import Literal
 
 import ollama
 from pydantic import BaseModel, Field, ValidationError
 
 from app.llm import MODEL_NAME
-import re
+
 
 class ResearchPlan(BaseModel):
     """Structured research plan generated from a financial question."""
@@ -25,6 +26,14 @@ class ResearchPlan(BaseModel):
         description="Reporting periods explicitly requested.",
     )
 
+    period_scope: Literal["standalone", "ytd"] | None = Field(
+        default=None,
+        description=(
+            "Explicitly requested standalone or year-to-date "
+            "reporting scope."
+        ),
+    )
+
     analysis_type: Literal[
         "summary",
         "comparison",
@@ -41,7 +50,6 @@ class ResearchPlan(BaseModel):
         default_factory=list,
         description="Specific searches needed to answer the question.",
     )
-
 
 
 SYSTEM_PROMPT = """
@@ -65,7 +73,10 @@ STRICT EXTRACTION RULES:
 
 3. REPORTING PERIODS
 - Extract only reporting periods explicitly mentioned.
-- Examples: FY2024, FY2025, Q1 2025, March 2025.
+- Recognize annual periods such as FY2024 and FY2025.
+- Recognize quarterly periods such as Q1 FY2026, Q2 FY2026,
+  Q3 FY2026 and Q4 FY2026.
+- Also recognize reversed formats such as FY2026 Q3.
 - Never invent reporting periods.
 - Never use "All Time", "Latest", or arbitrary dates
   as reporting periods unless explicitly requested.
@@ -73,7 +84,13 @@ STRICT EXTRACTION RULES:
 - For a period range, identify the relevant periods without
   inventing unsupported dates.
 
-4. ANALYSIS TYPE
+4. REPORTING SCOPE
+- Identify standalone when explicitly requested.
+- Identify YTD or year-to-date when explicitly requested.
+- Never assume standalone or YTD when the user does not specify it.
+- Return null when the reporting scope is not specified.
+
+5. ANALYSIS TYPE
 
 Choose the most appropriate category:
 
@@ -91,7 +108,7 @@ Important examples:
 - Operating cash flow trend -> cash_flow_analysis.
 - General company financial summary -> summary.
 
-5. CALCULATION REQUIREMENT
+6. CALCULATION REQUIREMENT
 
 Set requires_calculation to true when the question requires:
 - Growth percentage calculations.
@@ -103,7 +120,7 @@ Set requires_calculation to true when the question requires:
 Set it to false when the user only requests a descriptive summary
 or extraction of an existing financial figure.
 
-6. SEARCH REQUIREMENTS
+7. SEARCH REQUIREMENTS
 - Create searches using only the identified company, metrics
   and reporting periods.
 - Never invent a reporting period to construct a search.
@@ -111,16 +128,13 @@ or extraction of an existing financial figure.
   does not assume a particular period.
 - Return an empty list if no useful search can be constructed.
 
-7. GENERAL SAFETY
+8. GENERAL SAFETY
 - Never invent financial figures.
 - Never invent companies, reporting periods or metrics.
 - Do not answer the user's financial question.
 - Do not use outside knowledge to fill missing information.
 - Return only data matching the structured schema.
 """
-
-
-
 
 
 def normalize_research_plan(
@@ -130,6 +144,12 @@ def normalize_research_plan(
     """
     Normalize the LLM-generated research plan using
     deterministic rules based on the original question.
+
+    Supports:
+    - Annual fiscal years (FY2024, FY2025)
+    - Quarterly periods (Q1 FY2026, FY2026 Q3)
+    - Fiscal-year ranges
+    - Standalone and YTD reporting scopes
     """
 
     question_lower = question.lower()
@@ -193,19 +213,68 @@ def normalize_research_plan(
         plan.metrics = extracted_metrics
 
     # --------------------------------------------------
-    # 2. Extract fiscal years
+    # 2. Extract quarterly fiscal periods
     # --------------------------------------------------
 
-    fiscal_years = re.findall(
-        r"\bFY[\s-]?(\d{4})\b",
-        question,
+    quarter_pattern = re.compile(
+        r"\b(?:(?P<quarter_first>Q[1-4])\s*[,/-]?\s*"
+        r"FY[\s-]?(?P<year_first>\d{4})|"
+        r"FY[\s-]?(?P<year_second>\d{4})\s*[,/-]?\s*"
+        r"(?P<quarter_second>Q[1-4]))\b",
         flags=re.IGNORECASE,
     )
 
-    fiscal_years = list(dict.fromkeys(fiscal_years))
+    quarter_matches = list(
+        quarter_pattern.finditer(question)
+    )
+
+    quarterly_periods = []
+
+    for match in quarter_matches:
+        quarter = (
+            match.group("quarter_first")
+            or match.group("quarter_second")
+        ).upper()
+
+        year = (
+            match.group("year_first")
+            or match.group("year_second")
+        )
+
+        quarterly_periods.append(
+            (match.start(), f"{quarter} FY{year}")
+        )
 
     # --------------------------------------------------
-    # 3. Expand explicitly requested fiscal-year ranges
+    # 3. Extract annual fiscal years
+    # --------------------------------------------------
+
+    fiscal_year_matches = list(
+        re.finditer(
+            r"\bFY[\s-]?(\d{4})\b",
+            question,
+            flags=re.IGNORECASE,
+        )
+    )
+
+    fiscal_years = []
+
+    for match in fiscal_year_matches:
+
+        # Exclude fiscal years already included in quarters.
+        if any(
+            match.start() >= quarter.start()
+            and match.end() <= quarter.end()
+            for quarter in quarter_matches
+        ):
+            continue
+
+        fiscal_years.append(
+            (match.start(), match.group(1))
+        )
+
+    # --------------------------------------------------
+    # 4. Expand explicitly requested fiscal-year ranges
     # --------------------------------------------------
 
     range_match = re.search(
@@ -215,27 +284,72 @@ def normalize_research_plan(
         flags=re.IGNORECASE,
     )
 
-    if range_match:
+    if range_match and not quarterly_periods:
         start_year = int(range_match.group(1))
         end_year = int(range_match.group(2))
 
-        if start_year <= end_year and end_year - start_year <= 30:
+        if (
+            start_year <= end_year
+            and end_year - start_year <= 30
+        ):
             fiscal_years = [
-                str(year)
+                (
+                    range_match.start(),
+                    str(year),
+                )
                 for year in range(start_year, end_year + 1)
             ]
 
-    if fiscal_years:
+    # --------------------------------------------------
+    # 5. Build normalized reporting periods
+    # --------------------------------------------------
+
+    if quarterly_periods:
+        plan.periods = [
+            period
+            for _, period in sorted(quarterly_periods)
+        ]
+
+    elif fiscal_years:
         plan.periods = [
             f"FY{year}"
-            for year in fiscal_years
+            for _, year in sorted(fiscal_years)
         ]
+
     else:
         # Do not retain periods invented by the LLM.
         plan.periods = []
 
     # --------------------------------------------------
-    # 4. Correct analysis classification
+    # 6. Extract explicitly requested reporting scope
+    # --------------------------------------------------
+
+    standalone_requested = bool(
+        re.search(
+            r"\b(?:standalone|stand-alone)\b",
+            question_lower,
+        )
+    )
+
+    ytd_requested = bool(
+        re.search(
+            r"\b(?:ytd|year[\s-]+to[\s-]+date)\b",
+            question_lower,
+        )
+    )
+
+    if standalone_requested and not ytd_requested:
+        plan.period_scope = "standalone"
+
+    elif ytd_requested and not standalone_requested:
+        plan.period_scope = "ytd"
+
+    else:
+        # Never assume a reporting scope.
+        plan.period_scope = None
+
+    # --------------------------------------------------
+    # 7. Correct analysis classification
     # --------------------------------------------------
 
     if re.search(
@@ -275,7 +389,7 @@ def normalize_research_plan(
         plan.analysis_type = "summary"
 
     # --------------------------------------------------
-    # 5. Determine whether calculation is required
+    # 8. Determine whether calculation is required
     # --------------------------------------------------
 
     calculation_patterns = [
@@ -300,13 +414,14 @@ def normalize_research_plan(
     )
 
     # --------------------------------------------------
-    # 6. Generate search requirements deterministically
+    # 9. Generate search requirements deterministically
     # --------------------------------------------------
 
     search_requirements = []
 
     if plan.metrics:
         for metric in plan.metrics:
+
             if plan.periods:
                 for period in plan.periods:
                     parts = []
@@ -316,9 +431,13 @@ def normalize_research_plan(
 
                     parts.extend([period, metric])
 
+                    if plan.period_scope:
+                        parts.append(plan.period_scope)
+
                     search_requirements.append(
                         " ".join(parts)
                     )
+
             else:
                 parts = []
 
@@ -337,9 +456,6 @@ def normalize_research_plan(
     plan.search_requirements = search_requirements
 
     return plan
-
-
-
 
 
 def create_research_plan(question: str) -> ResearchPlan:
@@ -377,10 +493,10 @@ def create_research_plan(question: str) -> ResearchPlan:
                 "Ollama returned an empty research plan."
             )
 
-        # Validate the LLM-generated plan
+        # Validate the LLM-generated plan.
         plan = ResearchPlan.model_validate_json(content)
 
-        # Apply deterministic normalization
+        # Apply deterministic normalization.
         plan = normalize_research_plan(
             question=question.strip(),
             plan=plan,
@@ -397,4 +513,3 @@ def create_research_plan(question: str) -> ResearchPlan:
         raise RuntimeError(
             f"Research planning failed: {exc}"
         ) from exc
-

@@ -144,3 +144,97 @@ def test_normalize_classifies_profit_margin():
 
     assert result.analysis_type == "ratio_analysis"
     assert result.requires_calculation is True
+
+
+
+
+def test_normalize_extracts_quarterly_fiscal_period():
+    plan = ResearchPlan(
+        company="Apple",
+        metrics=[],
+        periods=[],
+        analysis_type="general_analysis",
+    )
+
+    result = normalize_research_plan(
+        "What was Apple's revenue for Q3 FY2026?",
+        plan,
+    )
+
+    assert result.periods == ["Q3 FY2026"]
+
+
+def test_normalize_extracts_multiple_quarterly_periods():
+    plan = ResearchPlan(
+        company="Apple",
+        metrics=[],
+        periods=[],
+        analysis_type="comparison",
+    )
+
+    result = normalize_research_plan(
+        "Compare Apple's Q3 FY2025 and Q3 FY2026 revenue.",
+        plan,
+    )
+
+    assert result.periods == ["Q3 FY2025", "Q3 FY2026"]
+
+
+def test_normalize_extracts_quarter_before_fiscal_year():
+    plan = ResearchPlan(
+        company="Apple",
+        metrics=[],
+        periods=[],
+    )
+
+    result = normalize_research_plan(
+        "Analyze Apple's FY2026 Q2 revenue.",
+        plan,
+    )
+
+    assert result.periods == ["Q2 FY2026"]
+
+
+def test_normalize_extracts_quarterly_standalone_scope():
+    plan = ResearchPlan(
+        company="Apple",
+        metrics=[],
+        periods=[],
+    )
+
+    result = normalize_research_plan(
+        "Show Apple's Q3 FY2026 standalone revenue.",
+        plan,
+    )
+
+    assert result.period_scope == "standalone"
+
+
+def test_normalize_extracts_year_to_date_scope():
+    plan = ResearchPlan(
+        company="Apple",
+        metrics=[],
+        periods=[],
+    )
+
+    result = normalize_research_plan(
+        "Show Apple's Q3 FY2026 year-to-date revenue.",
+        plan,
+    )
+
+    assert result.period_scope == "ytd"
+
+
+def test_normalize_does_not_invent_quarterly_periods():
+    plan = ResearchPlan(
+        company="Apple",
+        metrics=["Revenue"],
+        periods=["Q4 FY2025"],
+    )
+
+    result = normalize_research_plan(
+        "What was Apple's latest revenue?",
+        plan,
+    )
+
+    assert result.periods == []
