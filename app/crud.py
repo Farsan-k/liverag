@@ -1,10 +1,11 @@
-from app.models import Document, DocumentChunk
+from app.models import Document, DocumentChunk, FinancialDocument, FinancialMetricRecord
 from app.database import SessionLocal
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.dialects.postgresql import insert
 from app.chunking import create_text_chunks
 from app.hashing import calculate_content_hash
 import re
+from app.company_identity import resolve_company
 
 def create_document(title, source, content):
 
@@ -430,3 +431,433 @@ def get_chunk_metadata(chunk_ids: list[int]):
             result["chunk_id"]: dict(result)
             for result in results
         }
+
+
+
+
+def _financial_document_to_dict(document, duplicate=False):
+    return {
+        "id": document.id,
+        "document_id": document.document_id,
+        "original_filename": document.original_filename,
+        "storage_path": document.storage_path,
+        "file_type": document.file_type,
+        "file_hash": document.file_hash,
+        "company": document.company,
+        "expected_cik": document.expected_cik,
+        "extraction_status": document.extraction_status,
+        "created_at": document.created_at,
+        "duplicate": duplicate,
+    }
+
+
+
+def create_financial_document(
+    original_filename,
+    storage_path,
+    file_type,
+    file_hash,
+    document_id=None,
+    company=None,
+    expected_cik=None,
+):
+    with SessionLocal.begin() as session:
+
+        statement = (
+            insert(FinancialDocument)
+            .values(
+                original_filename=original_filename,
+                storage_path=storage_path,
+                file_type=file_type,
+                file_hash=file_hash,
+                document_id=document_id,
+                company=company,
+                expected_cik=expected_cik,
+                extraction_status="pending",
+            )
+            .on_conflict_do_nothing(
+                constraint="uq_financial_documents_file_hash"
+            )
+            .returning(FinancialDocument.id)
+        )
+
+        financial_document_id = (
+            session.execute(statement).scalar_one_or_none()
+        )
+
+        if financial_document_id is None:
+            document = session.execute(
+                select(FinancialDocument).where(
+                    FinancialDocument.file_hash == file_hash
+                )
+            ).scalar_one()
+
+            result = _financial_document_to_dict(
+                document,
+                duplicate=True,
+            )
+
+        else:
+            document = session.get(
+                FinancialDocument,
+                financial_document_id,
+            )
+
+            # Resolve the company using its authoritative SEC CIK.
+            if expected_cik:
+                identity = resolve_company(
+                    session,
+                    name=company,
+                    cik=expected_cik,
+                )
+
+                if identity["status"] == "resolved":
+                    document.company_id = identity["company"].id
+
+                elif identity["status"] == "identity_conflict":
+                    raise ValueError(
+                        "Company name does not match the registered CIK."
+                    )
+
+            session.flush()
+
+            result = _financial_document_to_dict(
+                document,
+                duplicate=False,
+            )
+
+    return result
+
+
+def get_financial_document(financial_document_id):
+    with SessionLocal() as session:
+
+        document = session.execute(
+            select(FinancialDocument).where(
+                FinancialDocument.id == financial_document_id
+            )
+        ).scalar_one_or_none()
+
+        if document is None:
+            return None
+
+        return _financial_document_to_dict(document)
+
+
+def get_financial_document_by_hash(file_hash):
+    with SessionLocal() as session:
+
+        document = session.execute(
+            select(FinancialDocument).where(
+                FinancialDocument.file_hash == file_hash
+            )
+        ).scalar_one_or_none()
+
+        if document is None:
+            return None
+
+        return _financial_document_to_dict(document)
+
+
+
+
+
+def update_financial_document_extraction_status(
+    financial_document_id: int,
+    status: str,
+) -> dict | None:
+    """
+    Update the extraction status of a financial document.
+
+    Supported statuses:
+    pending, processing, completed, failed.
+    """
+
+    allowed_statuses = {
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+    }
+
+    if status not in allowed_statuses:
+        raise ValueError(
+            f"Invalid extraction status: {status}"
+        )
+
+    with SessionLocal.begin() as session:
+        document = session.get(
+            FinancialDocument,
+            financial_document_id,
+        )
+
+        if document is None:
+            return None
+
+        document.extraction_status = status
+
+        session.flush()
+
+        return _financial_document_to_dict(document)
+
+
+
+
+
+from decimal import Decimal
+
+
+
+
+def create_financial_metrics(
+    source_document_id: int,
+    metrics: list,
+) -> list[dict]:
+    """
+    Replace previously extracted metrics for a source document.
+
+    Deletion and insertion happen in one transaction.
+    If insertion fails, previous records are preserved.
+
+    Financial metrics inherit the verified company_id
+    from their source financial document.
+    """
+
+    records = []
+
+    with SessionLocal.begin() as session:
+        source_document = session.get(
+            FinancialDocument,
+            source_document_id,
+        )
+
+        if source_document is None:
+            raise ValueError(
+                f"Financial document {source_document_id} not found."
+            )
+
+        # Remove previous extraction results atomically.
+        session.execute(
+            delete(FinancialMetricRecord).where(
+                FinancialMetricRecord.source_document_id
+                == source_document_id
+            )
+        )
+
+        for metric in metrics:
+            # Validate metric provenance.
+            if metric.source.source_document_id is not None:
+                if (
+                    str(metric.source.source_document_id)
+                    != str(source_document_id)
+                ):
+                    raise ValueError(
+                        "Metric provenance does not match source document."
+                    )
+
+            period = metric.period
+
+            record = FinancialMetricRecord(
+                source_document_id=source_document_id,
+
+                # Inherit verified company identity.
+                company_id=source_document.company_id,
+
+                # Preserve the existing company text.
+                company=metric.company or source_document.company,
+
+                metric=metric.metric,
+                value=Decimal(str(metric.value)),
+                unit=metric.unit,
+                currency=metric.currency,
+
+                # Reporting period
+                period_type=period.period_type,
+                period_label=period.label,
+                start_date=period.start_date,
+                end_date=period.end_date,
+                instant_date=period.instant_date,
+
+                # Fiscal reporting identity
+                fiscal_year=period.fiscal_year,
+                fiscal_period=period.fiscal_period,
+                period_scope=period.period_scope,
+
+                # Source information
+                source_type=metric.source.source_type,
+                provenance=metric.source.model_dump(mode="json"),
+                evidence=metric.evidence.model_dump(mode="json"),
+                dimensions=metric.dimensions,
+                confidence=metric.confidence,
+            )
+
+            session.add(record)
+            records.append(record)
+
+        session.flush()
+
+        return [
+            _financial_metric_to_dict(record)
+            for record in records
+        ]
+
+
+
+
+
+def _financial_metric_to_dict(record) -> dict:
+    return {
+        "id": record.id,
+        "source_document_id": record.source_document_id,
+        "company_id": record.company_id,
+        "company": record.company,
+        "metric": record.metric,
+        "value": record.value,
+        "unit": record.unit,
+        "currency": record.currency,
+
+        "period_type": record.period_type,
+        "period_label": record.period_label,
+        "start_date": record.start_date,
+        "end_date": record.end_date,
+        "instant_date": record.instant_date,
+
+        # Fiscal reporting identity
+        "fiscal_year": record.fiscal_year,
+        "fiscal_period": record.fiscal_period,
+        "period_scope": record.period_scope,
+
+        "source_type": record.source_type,
+        "provenance": record.provenance,
+        "evidence": record.evidence,
+        "dimensions": record.dimensions,
+        "confidence": record.confidence,
+        "created_at": record.created_at,
+    }
+
+def get_financial_metrics(
+    company: str | None = None,
+    metric: str | None = None,
+    source_document_id: int | None = None,
+    company_id: int | None = None,
+) -> list[dict]:
+    """
+    Retrieve financial metrics using optional filters.
+
+    company_id is the preferred filter when company identity
+    has already been resolved.
+    """
+
+    if company_id is not None and company is not None:
+        raise ValueError(
+            "Provide company_id or company, not both."
+        )
+
+    statement = select(FinancialMetricRecord)
+
+    if company_id is not None:
+        statement = statement.where(
+            FinancialMetricRecord.company_id == company_id
+        )
+
+    elif company is not None:
+        statement = statement.where(
+            FinancialMetricRecord.company.ilike(company)
+        )
+
+    if metric is not None:
+        statement = statement.where(
+            FinancialMetricRecord.metric.ilike(metric)
+        )
+
+    if source_document_id is not None:
+        statement = statement.where(
+            FinancialMetricRecord.source_document_id
+            == source_document_id
+        )
+
+    statement = statement.order_by(
+        FinancialMetricRecord.id
+    )
+
+    with SessionLocal() as session:
+        records = session.execute(
+            statement
+        ).scalars().all()
+
+        return [
+            _financial_metric_to_dict(record)
+            for record in records
+        ]
+
+
+
+def get_financial_metrics(
+    company: str | None = None,
+    metric: str | None = None,
+    source_document_id: int | None = None,
+    company_id: int | None = None,
+) -> list[dict]:
+    """
+    Retrieve financial metrics using optional filters.
+
+    company_id is the preferred filter when company identity
+    has already been resolved.
+
+    Args:
+        company: Company name to filter by.
+        metric: Financial metric name to filter by.
+        source_document_id: Source financial document ID.
+        company_id: Verified company ID.
+
+    Returns:
+        A list of financial metric records.
+    """
+
+    # Prevent conflicting company filters.
+    if company_id is not None and company is not None:
+        raise ValueError(
+            "Provide company_id or company, not both."
+        )
+
+    statement = select(FinancialMetricRecord)
+
+    # Filter using verified company identity.
+    if company_id is not None:
+        statement = statement.where(
+            FinancialMetricRecord.company_id == company_id
+        )
+
+    # Backward-compatible company-name filtering.
+    elif company is not None:
+        statement = statement.where(
+            FinancialMetricRecord.company.ilike(company)
+        )
+
+    # Filter by financial metric.
+    if metric is not None:
+        statement = statement.where(
+            FinancialMetricRecord.metric.ilike(metric)
+        )
+
+    # Filter by source document.
+    if source_document_id is not None:
+        statement = statement.where(
+            FinancialMetricRecord.source_document_id
+            == source_document_id
+        )
+
+    statement = statement.order_by(
+        FinancialMetricRecord.id
+    )
+
+    with SessionLocal() as session:
+        records = session.execute(
+            statement
+        ).scalars().all()
+
+        return [
+            _financial_metric_to_dict(record)
+            for record in records
+        ]
+

@@ -2,6 +2,10 @@
 from app.graph.state import ResearchState
 from app.vector_store import search_embeddings
 from app.llm import generate_answer
+from app.agents.research_agent import ResearchPlan
+from app.agents.analysis_agent import analyze_research_plan
+from app.agents.verification_agent import verify_analysis
+from decimal import Decimal, InvalidOperation
 
 from app.validation import (
     has_matching_time_period,
@@ -192,13 +196,183 @@ def validate_evidence_node(state: ResearchState) -> dict:
     }
 
 
+
+
+
+def analysis_node(state: ResearchState) -> dict:
+    """Execute deterministic financial analysis."""
+
+    try:
+        plan = ResearchPlan.model_validate(
+            state.get("research_plan", {})
+        )
+
+        analysis = analyze_research_plan(plan)
+
+        return {
+            "analysis": analysis,
+            "error": "",
+        }
+
+    except Exception as exc:
+        return {
+            "analysis": {
+                "summary": "",
+                "calculations": [],
+                "comparisons": [],
+                "trends": [],
+                "insights": [],
+                "limitations": [
+                    f"Financial analysis failed: {exc}"
+                ],
+            },
+            "error": f"Financial analysis failed: {exc}",
+        }
+
+
+def verification_node(state: ResearchState) -> dict:
+    """Independently verify financial calculations."""
+
+    analysis = state.get("analysis", {})
+
+    try:
+        result = verify_analysis(analysis)
+
+        return {
+            "verification_result": result["verified"],
+            "verification_errors": result["errors"],
+            "verification_details": result,
+            "error": "",
+        }
+
+    except Exception as exc:
+        error = f"Financial verification failed: {exc}"
+
+        return {
+            "verification_result": False,
+            "verification_errors": [error],
+            "verification_details": {
+                "verified": False,
+                "errors": [error],
+                "calculations": [],
+            },
+            "error": error,
+        }
+
+
+def _format_decimal(value: str, decimal_places: int = 4) -> str:
+    """Format a Decimal without losing the original calculation."""
+
+    number = Decimal(value)
+
+    formatted = f"{number:,.{decimal_places}f}"
+
+    return formatted.rstrip("0").rstrip(".")
+
+
+def _generate_calculation_response(
+    state: ResearchState,
+) -> str:
+    """Build a response using only verified financial calculations."""
+
+    analysis = state.get("analysis", {})
+    calculations = analysis.get("calculations", [])
+
+    if not state.get("verification_result"):
+        limitations = analysis.get("limitations", [])
+        errors = state.get("verification_errors", [])
+
+        reasons = list(dict.fromkeys(limitations + errors))
+
+        if not reasons:
+            reasons = [
+                "The financial result could not be independently verified."
+            ]
+
+        return (
+            "I couldn't provide a verified financial calculation.\n\n"
+            + "\n".join(f"- {reason}" for reason in reasons)
+        )
+
+    verified_calculations = [
+        calculation
+        for calculation in calculations
+        if calculation.get("status") == "calculated"
+    ]
+
+    if not verified_calculations:
+        return (
+            "No completed financial calculation was available "
+            "to present."
+        )
+
+    sections = []
+
+    for calculation in verified_calculations:
+        metric = calculation["metric"]
+        value = _format_decimal(calculation["value"])
+        unit = calculation["unit"]
+
+        lines = [
+            f"{metric}: {value}{unit}",
+            "",
+            f"Formula: {calculation['formula']}",
+            "",
+            "Financial inputs:",
+        ]
+
+        for item in calculation.get("inputs", []):
+            amount = _format_decimal(item["value"], 2)
+            currency = item.get("currency") or item.get("unit", "")
+
+            period = item.get("period") or {}
+            period_label = period.get("label") or "Unspecified period"
+
+            lines.append(
+                f"- {item['metric']}: {amount} {currency} "
+                f"({period_label})"
+            )
+
+            source = item.get("source") or {}
+
+            if source.get("source_document_id") is not None:
+                lines.append(
+                    "  Source document ID: "
+                    f"{source['source_document_id']}"
+                )
+
+        sections.append("\n".join(lines))
+
+    return (
+        "Financial analysis completed and independently verified.\n\n"
+        + "\n\n".join(sections)
+    )
+
+
+
+
+
+
 def generate_answer_node(state: ResearchState) -> dict:
     """
-    Generate an answer and validate its financial claims.
+    Generate a response.
+
+    Calculation questions use verified structured results.
+    Descriptive questions retain the existing LLM response path.
     """
 
+    research_plan = state.get("research_plan", {})
+
+    if research_plan.get("requires_calculation", False):
+        answer = _generate_calculation_response(state)
+
+        return {
+            "answer": answer,
+            "error": "",
+        }
+
     question = state["question"]
-    context = state["context"]
+    context = state.get("context", "")
 
     try:
         answer = generate_answer(
@@ -206,7 +380,6 @@ def generate_answer_node(state: ResearchState) -> dict:
             context=context,
         )
 
-        # Check whether the generated answer is supported.
         numbers_valid = answer_numbers_match_context(
             answer,
             context,

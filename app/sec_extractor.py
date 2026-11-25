@@ -35,6 +35,76 @@ def load_sec_report(file_path: str | Path) -> BeautifulSoup:
 
 
 
+
+def extract_filing_metadata(
+    soup: BeautifulSoup,
+) -> dict[str, Any]:
+    """
+    Extract filing-level fiscal metadata from SEC XBRL reports.
+
+    Reads DocumentType, DocumentFiscalYearFocus,
+    DocumentFiscalPeriodFocus and DocumentPeriodEndDate.
+    """
+
+    def get_tag_value(local_name: str) -> str | None:
+        tag = soup.find(
+            lambda element: (
+                element.name
+                and element.name.lower().split(":")[-1]
+                == local_name.lower()
+            )
+        )
+
+        if tag is None:
+            return None
+
+        value = tag.get_text(" ", strip=True)
+
+        return value or None
+
+    document_type = get_tag_value("DocumentType")
+    fiscal_year_raw = get_tag_value("DocumentFiscalYearFocus")
+    fiscal_period = get_tag_value("DocumentFiscalPeriodFocus")
+    period_end_date = get_tag_value("DocumentPeriodEndDate")
+
+    fiscal_year = None
+
+    if fiscal_year_raw:
+        try:
+            fiscal_year = int(fiscal_year_raw)
+
+            if not 1900 <= fiscal_year <= 2200:
+                fiscal_year = None
+
+        except (TypeError, ValueError):
+            fiscal_year = None
+
+    if fiscal_period:
+        fiscal_period = fiscal_period.upper().strip()
+
+        if fiscal_period not in {"Q1", "Q2", "Q3", "FY"}:
+            fiscal_period = None
+
+    if period_end_date:
+        try:
+            period_end_date = date.fromisoformat(
+                period_end_date
+            ).isoformat()
+        except ValueError:
+            period_end_date = None
+
+    return {
+        "document_type": document_type,
+        "fiscal_year_focus": fiscal_year,
+        "fiscal_period_focus": fiscal_period,
+        "document_period_end_date": period_end_date,
+    }
+
+
+
+
+
+
 def extract_contexts(soup: BeautifulSoup) -> dict[str, dict[str, Any]]:
     """
     Extract XBRL contexts, including entity identifiers,
@@ -129,24 +199,55 @@ def extract_contexts(soup: BeautifulSoup) -> dict[str, dict[str, Any]]:
 
 
 
+
 def extract_numeric_facts(soup: BeautifulSoup) -> list[dict[str, Any]]:
     """
-    Extract raw numeric XBRL facts from an SEC report.
-    Preserves original values and metadata.
-    """
-    facts = []
+    Extract numeric XBRL facts from both:
+    1. Inline XBRL (ix:nonFraction)
+    2. Standard XBRL instance documents
 
-    for tag in soup.find_all(
-        lambda element: element.name
-        and element.name.lower().endswith("nonfraction")
-    ):
+    Preserves original values and fact metadata.
+    """
+
+    facts: list[dict[str, Any]] = []
+
+    for tag in soup.find_all(True):
         attributes = {
             key.lower(): value
             for key, value in tag.attrs.items()
         }
 
+        tag_name = (tag.name or "").lower()
+
+        is_inline_numeric = tag_name.endswith("nonfraction")
+
+        is_standard_numeric = (
+            bool(attributes.get("contextref"))
+            and bool(attributes.get("unitref"))
+            and not is_inline_numeric
+        )
+
+        if not is_inline_numeric and not is_standard_numeric:
+            continue
+
+        raw_value = tag.get_text("", strip=True)
+
+        if not raw_value:
+            continue
+
+        # Inline XBRL uses the name attribute.
+        # Standard XBRL uses the element's qualified tag name.
+        concept_name = (
+            attributes.get("name")
+            if is_inline_numeric
+            else tag.name
+        )
+
+        if not concept_name:
+            continue
+
         fact = {
-            "name": attributes.get("name"),
+            "name": str(concept_name),
             "context_ref": attributes.get("contextref"),
             "unit_ref": attributes.get("unitref"),
             "scale": attributes.get("scale"),
@@ -154,12 +255,13 @@ def extract_numeric_facts(soup: BeautifulSoup) -> list[dict[str, Any]]:
             "decimals": attributes.get("decimals"),
             "format": attributes.get("format"),
             "fact_id": attributes.get("id"),
-            "raw_value": tag.get_text("", strip=True)
+            "raw_value": raw_value,
         }
 
         facts.append(fact)
 
     return facts
+
 
 
 

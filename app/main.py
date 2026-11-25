@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from app.schemas import DocumentCreate, DocumentUpdate, SearchRequest, AskRequest
 from app.config import settings
 from app.crud import delete_document
@@ -28,11 +28,25 @@ from app.validation import (
     requires_metric_amount,
     has_matching_metric_category_amount,
 )
+from pathlib import Path
+from app.storage.service import store_financial_file
 
 app = FastAPI(
     title=settings.app_name,
     debug=settings.debug,
               )
+
+
+MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
+
+SUPPORTED_FINANCIAL_EXTENSIONS = {
+    ".pdf",
+    ".html",
+    ".htm",
+    ".xhtml",
+    ".xml",
+}
+
 
 # FALLBACK_ANSWER = (
 #     "I do not have enough information to answer this question."
@@ -409,6 +423,139 @@ def document_delete_api(document_id: int):
     delete_document_embeddings(document_id)
 
 
+@app.post("/financial-documents/upload")
+async def upload_financial_document(
+    file: UploadFile = File(...),
+    company: str | None = Form(default=None),
+    expected_cik: str | None = Form(default=None),
+):
+    # 1. Validate filename and extension
+    if not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="Filename is required.",
+        )
+
+    original_filename = file.filename.replace("\\", "/").rsplit("/", 1)[-1]
+    extension = Path(original_filename).suffix.lower()
+
+    if extension not in SUPPORTED_FINANCIAL_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file extension.",
+        )
+
+    # 2. Validate optional metadata
+    if company is not None:
+        company = company.strip() or None
+
+        if company and len(company) > 255:
+            raise HTTPException(
+                status_code=400,
+                detail="Company name cannot exceed 255 characters.",
+            )
+
+    if expected_cik is not None:
+        expected_cik = expected_cik.strip() or None
+
+        if expected_cik:
+            if not expected_cik.isdigit() or len(expected_cik) > 10:
+                raise HTTPException(
+                    status_code=400,
+                    detail="CIK must contain between 1 and 10 digits.",
+                )
+
+            expected_cik = expected_cik.zfill(10)
+
+    # 3. Read file with a strict size limit
+    content_parts = []
+    total_size = 0
+
+    while True:
+        chunk = await file.read(1024 * 1024)
+
+        if not chunk:
+            break
+
+        total_size += len(chunk)
+
+        if total_size > MAX_UPLOAD_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="File exceeds the maximum upload size of 20 MB.",
+            )
+
+        content_parts.append(chunk)
+
+    content = b"".join(content_parts)
+
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is empty.",
+        )
+
+    # 4. Validate basic file content
+    if extension == ".pdf":
+        if not content.startswith(b"%PDF-"):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid PDF file content.",
+            )
+
+        category = "pdf"
+        file_type = "pdf"
+
+    else:
+        markup = content.lstrip(b"\xef\xbb\xbf \t\r\n")
+
+        if not markup.startswith(b"<") or b"\x00" in content[:4096]:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid XML/HTML financial document content.",
+            )
+
+        category = "sec"
+        file_type = extension.lstrip(".")
+
+    # 5. Store file and create PostgreSQL record
+    try:
+        result = store_financial_file(
+            file_content=content,
+            original_filename=original_filename,
+            file_type=file_type,
+            category=category,
+            company=company,
+            expected_cik=expected_cik,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    finally:
+        await file.close()
+
+    # 6. Return public response (do not expose local storage path)
+    return {
+        "message": (
+            "Financial document already exists."
+            if result["duplicate"]
+            else "Financial document uploaded successfully."
+        ),
+        "id": result["id"],
+        "original_filename": result["original_filename"],
+        "file_type": result["file_type"],
+        "file_hash": result["file_hash"],
+        "file_size": result["file_size"],
+        "company": result["company"],
+        "expected_cik": result["expected_cik"],
+        "extraction_status": result["extraction_status"],
+        "duplicate": result["duplicate"],
+        "created_at": result["created_at"],
+    }
 
 @app.post("/search")
 def search_api(request: SearchRequest):

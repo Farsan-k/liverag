@@ -20,6 +20,12 @@ class FinancialAnalysis(TypedDict, total=False):
     limitations: list[str]
 
 
+class VerificationDetails(TypedDict, total=False):
+    verified: bool
+    errors: list[str]
+    calculations: list[dict[str, Any]]
+
+
 class ResearchState(TypedDict):
     # User input
     question: str
@@ -40,6 +46,7 @@ class ResearchState(TypedDict):
     # Verification Agent
     verification_result: NotRequired[bool]
     verification_errors: NotRequired[list[str]]
+    verification_details: NotRequired[VerificationDetails]
 
     # Workflow control
     retry_count: NotRequired[int]
